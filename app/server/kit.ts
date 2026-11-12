@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { EFFORTS, MODELS } from './kitedit.ts';
 
 const require = createRequire(import.meta.url);
 const COMPILER_LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'compiler', 'lib');
@@ -52,6 +53,8 @@ export interface KitView {
   version: string;
   stages: string[];
   workers: WorkerView[];
+  options: { models: string[]; efforts: string[] };
+  tiers: string[];        // kit.yaml tiers 의 tier 문자열 (예: Sonnet medium)
 }
 
 export interface KitProblem { ok: false; repo: string | null; message: string }
@@ -103,5 +106,6 @@ export function readKit(repo: string | null): KitView | KitProblem {
   const stages: string[] = kit.meta.stages.map(String);
   const order = (s: string) => stages.indexOf(s);
   workers.sort((a, b) => order(a.stage) - order(b.stage) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { ok: true, repo, name: String(kit.meta.name), version: String(kit.meta.version), stages, workers };
+  const tiers = (Array.isArray(kit.meta.tiers) ? kit.meta.tiers : []).map((r: any) => String(r && r.tier));
+  return { ok: true, repo, name: String(kit.meta.name), version: String(kit.meta.version), stages, workers, options: { models: [...MODELS], efforts: [...EFFORTS] }, tiers };
 }

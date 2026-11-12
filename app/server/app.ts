@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { configDir, loadConfig, saveConfig } from './config.ts';
 import { detect } from './git.ts';
 import { readKit } from './kit.ts';
+import { previewSave } from './kitedit.ts';
+import { pullFastForward, remoteStatus } from './kitgit.ts';
+import { cancelSave, getSave, retrySave, startSave } from './kitsave.ts';
 import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
@@ -84,6 +87,43 @@ export function createHandler(opts: ServerOptions = {}) {
     }
 
     if (a === 'kit' && b === 'workers' && method === 'GET') return send(res, 200, readKit(cfg.kitRepoPath));
+
+    // 워커 model·effort 저장 (kit 레포 git)
+    if (a === 'kit' && b && b !== 'workers') {
+      const repo = cfg.kitRepoPath;
+      if (!repo) throw new UserError(400, 'kit 레포 경로가 지정되지 않았다 — 설정 › 일반에서 지정');
+      if (b === 'remote' && !c && method === 'GET') return send(res, 200, await remoteStatus(repo));
+      if (b === 'pull' && !c && method === 'POST') {
+        const r = await pullFastForward(repo);
+        return send(res, 200, { ...r, remote: await remoteStatus(repo, { fetch: false }) });
+      }
+      if (b === 'preview' && !c && method === 'POST') {
+        const body = await readBody(req);
+        try { return send(res, 200, await previewSave(repo, body.worker, body.model, body.effort)); } catch (e: any) { throw new UserError(400, e.message); }
+      }
+      if (b === 'save') {
+        if (!c && method === 'GET') return send(res, 200, getSave());
+        if (!c && method === 'POST') {
+          const body = await readBody(req);
+          return send(res, 202, startSave(repo, { worker: String(body.worker ?? ''), model: String(body.model ?? ''), effort: String(body.effort ?? '') }));
+        }
+        if (c === 'retry' && method === 'POST') return send(res, 200, await retrySave(repo));
+        if (c === 'cancel' && method === 'POST') return send(res, 200, await cancelSave(repo));
+      }
+      if (b === 'open' && !c && method === 'POST') {
+        const body = await readBody(req);
+        if (typeof body.file !== 'string' || !body.file) throw new UserError(400, 'file이 비어 있다');
+        const abs = path.resolve(repo, body.file);
+        const rel = path.relative(repo, abs);
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new UserError(400, `kit 레포 밖 경로는 열지 않는다: ${body.file}`);
+        const line = Number.isInteger(body.line) && body.line > 0 ? body.line : undefined;
+        let cmd;
+        try { cmd = editorCommand(cfg.editorCommand, abs, process.platform, process.env, undefined, line); } catch (e: any) { throw new UserError(400, e.message); }
+        const r = await launcher(cmd, 'editor');
+        if (!r.ok) throw new UserError(500, `에디터를 못 열었다 (${cfg.editorCommand}): ${r.message} — 설정 › 일반에서 에디터 명령을 확인`);
+        return send(res, 200, { ok: true });
+      }
+    }
 
     if (a === 'versions' && method === 'GET') {
       const k = readKit(cfg.kitRepoPath);

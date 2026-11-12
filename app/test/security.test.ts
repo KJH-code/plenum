@@ -31,3 +31,12 @@ test('정적 파일은 dist 밖으로 못 나간다', async () => {
   expect([403, 200, 503]).toContain(status);
   await srv.close();
 });
+
+test('kit 저장 API의 POST도 X-Plenum 헤더 없으면 403', async () => {
+  const srv = await inProcess({ cfgDir: path.join(tmpDir(), 'cfg') });
+  for (const p of ['/api/kit/pull', '/api/kit/preview', '/api/kit/save', '/api/kit/save/retry', '/api/kit/save/cancel', '/api/kit/open']) {
+    const r = await fetch(`${srv.base}${p}`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"worker":"impl","model":"opus","effort":"xhigh","file":"kit/kit.yaml"}' });
+    expect(r.status, p).toBe(403);
+  }
+  await srv.close();
+});
