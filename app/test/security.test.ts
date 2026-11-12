@@ -11,6 +11,14 @@ test('X-Plenum 헤더 없는 POST는 403', async () => {
   await srv.close();
 });
 
+test('X-Plenum 헤더 없는 POST /api/install 은 403 (설치본에 반영)', async () => {
+  const srv = await inProcess({ cfgDir: path.join(tmpDir(), 'cfg') });
+  const r = await fetch(`${srv.base}/api/install`, { method: 'POST' });
+  expect(r.status).toBe(403);
+  expect((await srv.call('GET', '/api/install')).body.status).toBe('idle');
+  await srv.close();
+});
+
 test('Host가 127.0.0.1·localhost가 아니면 403 (DNS rebinding)', async () => {
   const srv = await inProcess({ cfgDir: path.join(tmpDir(), 'cfg') });
   const port = Number(new URL(srv.base).port);

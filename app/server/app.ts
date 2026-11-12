@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { configDir, loadConfig, saveConfig } from './config.ts';
 import { detect } from './git.ts';
 import { readKit } from './kit.ts';
+import { getInstall, startInstall } from './install.ts';
 import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
@@ -90,6 +91,11 @@ export function createHandler(opts: ServerOptions = {}) {
       const v = compareVersions(cfg.kitRepoPath, k.ok ? { name: k.name, version: k.version } : null, env);
       if (!k.ok && cfg.kitRepoPath) v.sourceProblem = k.message; // 경로는 있는데 kit을 못 읽으면 그 이유를 그대로
       return send(res, 200, v);
+    }
+
+    if (a === 'install' && !b) {
+      if (method === 'GET') return send(res, 200, getInstall());
+      if (method === 'POST') return send(res, 202, startInstall(cfg.kitRepoPath, { env }));
     }
 
     if (a === 'inspect' && method === 'POST') {
