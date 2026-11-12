@@ -1,0 +1,18 @@
+{
+  "name": "plenum",
+  "version": "0.1.0",
+  "description": "Plenum — Claude Code 세션 런처. 루트 패키지는 kit 컴파일러(plenum-compile·plenum-pack)이고 앱은 app/에 따로 있다",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "bin": {
+    "plenum-compile": "bin/plenum-compile",
+    "plenum-pack": "bin/plenum-pack"
+  },
+  "files": ["bin/", "compiler/*.js", "compiler/lib/"],
+  "scripts": {
+    "test": "node compiler/run-tests.js"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}

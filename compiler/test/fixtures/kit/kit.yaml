@@ -1,0 +1,13 @@
+name: demo-kit
+version: "0.0.1"
+description: "컴파일러 테스트용 작은 kit"
+targets: [claude-code]
+stages: [구현, 리뷰]
+tiers:
+  - tier: Sonnet medium
+    label: "Sonnet medium"
+    role: "구현"
+  - tier: Opus xhigh
+    label: "Opus xhigh"
+    role: "리뷰"
+worker_order: [rev, impl]

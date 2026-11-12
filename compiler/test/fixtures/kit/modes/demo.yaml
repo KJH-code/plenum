@@ -1,0 +1,5 @@
+slots:
+  - slot: implement
+    worker: impl
+  - slot: review
+    worker: rev

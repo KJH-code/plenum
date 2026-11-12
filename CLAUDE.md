@@ -1,0 +1,36 @@
+# Plenum
+
+Claude Code 세션 런처. 프로젝트를 고르고(세션은 3단계), kit 레포의 워커 정의를 본다. 루트 패키지는 kit 컴파일러이고, 앱은 `app/`에 따로 있다. 공개 레포.
+
+DevVault: Projects/jh-kit
+
+## 스택
+- 컴파일러(`compiler/`, `bin/`): Node 18 이상, CommonJS JS. 의존성은 `js-yaml` 하나. kit 레포가 `github:KJH-code/plenum#<태그>`로 가져다 쓴다
+- 앱(`app/`): TypeScript + React(Vite) + 로컬 Node 서버(`node:http`). Node 20.19 이상. 별도 package.json — 루트에 앱 의존성을 넣지 않는다(kit 레포 설치에 딸려 간다)
+- 테스트: 컴파일러는 `node --test`(`compiler/run-tests.js`), 앱은 Vitest, 화면은 Playwright
+- 새 의존성은 재혁 확인 후
+
+## 구조
+- `compiler/compile.js` — `plenum-compile [--kit <dir>] [--out <dir>] [--json]`. 기본 `<cwd>/kit` → `<cwd>/build/claude-code`
+- `compiler/pack.js` — `plenum-pack [--build <dir>] [--out <file>]`. 기본 `<cwd>/dist/<name>-<version>.zip`
+- `compiler/lib/` — `kit.js`(kit 읽기·모델), `claude-code.js`(타깃 컴파일러·검증), `render.js`(토큰), `prose.js`(산문 경고)
+- `compiler/test/` — fixture kit(`fixtures/kit`)으로 도는 컴파일러·pack 테스트
+- `app/server/` — `node:http` 서버. config(설정·목록), git(감지·clone), projects, kit(워커: 컴파일러의 `loadKit` 재사용), versions(트리 해시), open(폴더·에디터 명령)
+- `app/web/src/` — React. `theme.css` 색 토큰 접두어 `--bg-*`·`--fg-*`·`--line-*`(대비 테스트가 모든 쌍을 잰다), 해시 라우팅
+- `app/test/` — Vitest, `app/e2e/screens.ts` — Playwright 스크린샷
+
+## 명령
+- 컴파일러 테스트: `npm test` (루트)
+- 앱 (`app/`에서): `npm install` → `npm start`(웹 빌드 + 서버 127.0.0.1:4317, 사용 중이면 다음 빈 포트) · 개발은 `npm run serve` + `npm run dev`
+- 앱 테스트: `npm test`(Vitest), `npm run typecheck`. 워커 대조 테스트는 옆 폴더 `../jh-kit`(또는 `PLENUM_TEST_KIT_REPO`)이 있어야 돈다. 없으면 건너뛴다고 표시된다
+- 화면: `npm run screens -- <kit 레포> <출력 폴더>` (Playwright, 다크)
+- 설정 파일: `%APPDATA%\plenum\config.json` (그 밖 `~/.config/plenum`, 테스트는 `PLENUM_CONFIG_DIR`). 설치본은 `~/.claude/plugins/installed_plugins.json`(`CLAUDE_CONFIG_DIR`)
+
+## 규칙
+- 생성물은 결정적이어야 한다 (날짜·시각·정렬 안 된 순회 금지)
+- 머리말은 YAML로 다시 직렬화하지 않는다 (원문 줄 유지)
+- 컴파일러를 바꾸면 jh-kit 레포에서 `plenum-compile` 결과가 커밋된 `build/`와 같은지(또는 의도한 차이만 있는지) 확인한다. 태그를 올려야 kit 레포에 반영된다
+- 경로·명령 인자는 셸 없이 `execFile`에 배열로 넘긴다 (Windows 한글 사용자 이름 홈, 예: `C:\Users\홍길동`)
+- 색은 `theme.css` `:root` 토큰에만 쓴다. 글자 4.5:1, 테두리 3:1 (contrast 테스트). 모르는 값은 지어내지 않고 `[…]` 자리표시
+- 로컬 서버: 127.0.0.1에만, 바꾸는 요청은 `X-Plenum: 1` 헤더 필수, Host 검사
+- 커밋 메시지는 한국어. 커밋에 모델 이름을 넣지 않는다
