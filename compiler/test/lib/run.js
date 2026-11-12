@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { copyDir } = require('./tree');
 
 const ROOT = path.join(__dirname, '..', '..', '..');
 const COMPILE = path.join(ROOT, 'bin', 'plenum-compile');
@@ -11,7 +12,7 @@ const FIXTURE = path.join(__dirname, '..', 'fixtures', 'kit');
 
 function copyFixture(dir) {
   const kit = path.join(dir, 'kit');
-  fs.cpSync(FIXTURE, kit, { recursive: true });
+  copyDir(FIXTURE, kit);
   return kit;
 }
 

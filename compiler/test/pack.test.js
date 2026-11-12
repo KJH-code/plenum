@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { copyFixture, compile, pack } = require('./lib/run');
-const { listFiles, makeTmp, rmTmp } = require('./lib/tree');
+const { listFiles, makeTmp, rmTmp, copyDir } = require('./lib/tree');
 const { readZip } = require('./lib/zip');
 
 let tmp, build;
@@ -54,7 +54,7 @@ test('훅·스크립트 .js 는 755, 나머지 644', () => {
 
 test('Windows 체크아웃 흉내(CRLF + 실행 비트 없음)로 묶어도 같은 zip, CR 0개', () => {
   const win = path.join(tmp, 'win-build');
-  fs.cpSync(build, win, { recursive: true });
+  copyDir(build, win);
   let converted = 0;
   for (const n of listFiles(win)) {
     const p = path.join(win, n);

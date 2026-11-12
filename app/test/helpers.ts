@@ -7,6 +7,17 @@ import { createHandler, listen } from '../server/app.ts';
 
 export const APP = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// fs.cpSync 대신 쓰는 재귀 복사 (Windows Node 22.23 에서 cpSync가 한글 경로 아래에 파일을 안 만들었다)
+export function copyDir(src: string, dest: string) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    if (e.isDirectory()) copyDir(s, d);
+    else if (e.isFile()) fs.copyFileSync(s, d);
+  }
+}
+
 export function tmpDir(prefix = 'plenum-'): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }

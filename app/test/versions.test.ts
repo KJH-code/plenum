@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { compareVersions, treeHash } from '../server/versions.ts';
-import { tmpDir } from './helpers.ts';
+import { copyDir, tmpDir } from './helpers.ts';
 
 function setup() {
   const root = tmpDir();
@@ -18,7 +18,7 @@ function setup() {
   return { root, repo, build, home, installPath };
 }
 function install(home: string, installPath: string, from: string, version = '2.1.1') {
-  fs.cpSync(from, installPath, { recursive: true });
+  copyDir(from, installPath);
   fs.writeFileSync(path.join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
     plugins: { 'jh-kit@kjh-code': [{ scope: 'user', installPath, version, installedAt: 'x', lastUpdated: 'x', gitCommitSha: 'x' }] },

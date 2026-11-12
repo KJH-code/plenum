@@ -43,4 +43,16 @@ function rmTmp(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 정리 실패는 무시 */ }
 }
 
-module.exports = { listFiles, compareTrees, makeTmp, rmTmp };
+// fs.cpSync 대신 쓰는 재귀 복사. Windows(Node 22.23)에서 cpSync가 한글 경로 아래에 파일을 하나도 만들지 않았다 (CI 실측).
+// 실행 비트도 옮긴다.
+function copyDir(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    if (e.isDirectory()) copyDir(s, d);
+    else if (e.isFile()) { fs.copyFileSync(s, d); fs.chmodSync(d, fs.statSync(s).mode & 0o777); }
+  }
+}
+
+module.exports = { listFiles, compareTrees, makeTmp, rmTmp, copyDir };
