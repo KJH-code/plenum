@@ -48,11 +48,13 @@ describe('외부 에디터 실행', () => {
     expect(fs.existsSync(marker)).toBe(true);
   });
 
-  // 0.1.1 방식 재현: 배치 파일을 따옴표 붙은 이름("plenumfakecode")으로 PATH에서 찾게 하면 %~dp0 가 현재 폴더가 되어 9009로 실패한다
+  // 0.1.1 방식 재현: 배치 파일을 따옴표 붙은 이름("plenumfakecode")으로 PATH에서 찾게 하면 %~dp0 가 현재 폴더가 된다
   test.runIf(WIN)('재현: 0.1.1 방식(따옴표 붙은 이름)은 %~dp0 가 현재 폴더가 되어 실패한다', async () => {
     const r = await launchAndWait({ cmd: 'cmd.exe', args: ['/d', '/s', '/c', `""${NAME}" "${target}""`], verbatim: true });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.message).toMatch(/종료 코드 9009/);
+    // %~dp0 가 배치 파일 폴더가 아니라 현재 폴더(process.cwd())로 잡힌 흔적: "<cwd>\..\real-editor.cmd" 를 찾다 실패
+    // (진짜 code.cmd 는 Code.exe 를 바로 불러 9009, 이 가짜는 call 을 거쳐 1)
+    if (!r.ok) expect(r.message).toContain(`${process.cwd()}\\..\\real-editor.cmd`);
     expect(fs.existsSync(marker)).toBe(false);
   });
 
