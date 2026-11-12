@@ -23,6 +23,7 @@ export function GitBadges({ p }: { p: Project }) {
       {!d.exists && <span className="badge bad">폴더 없음</span>}
       {d.exists && d.git === 'none' && <span className="badge warn">git 아님</span>}
       {d.exists && d.git === 'empty' && <span className="badge">커밋 없음</span>}
+      {d.exists && d.git === 'none' && d.parentRepo && <span className="badge warn">상위 폴더가 레포</span>}
     </>
   );
 }
@@ -34,6 +35,17 @@ export function NotGitNotice() {
       <div>
         <b>git이 아니라서 절약~극한 모드는 끝까지 못 간다</b>
         <div>편집은 되지만 커밋과 검수(check)가 막힌다. 폴더에서 <code>git init</code> 을 하면 풀린다.</div>
+      </div>
+    </div>
+  );
+}
+
+export function ParentRepoNotice({ parent }: { parent: string }) {
+  return (
+    <div className="notice" role="note" data-testid="parent-repo-notice">
+      <div>
+        <b>이 폴더엔 .git이 없는데 상위 폴더가 git 레포다</b>
+        <div>상위 레포: <span className="mono">{parent}</span>. 여기서 Claude Code를 쓰면 커밋·diff가 그 레포에 걸린다. 의도한 게 아니면 그 폴더의 <code>.git</code>을 확인한다.</div>
       </div>
     </div>
   );

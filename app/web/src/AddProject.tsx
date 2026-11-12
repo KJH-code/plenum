@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Detection } from './api';
-import { NotGitNotice } from './common';
+import { NotGitNotice, ParentRepoNotice } from './common';
 import { Close } from './icons';
 
 const gitText = (d: Detection) => (!d.exists ? '폴더 없음' : d.git === 'none' ? '아님' : d.git === 'empty' ? '커밋 없음' : `있음 · ${d.branch || '[브랜치 없음]'}`);
@@ -75,6 +75,7 @@ export function AddProject({ onClose, onAdded }: { onClose: () => void; onAdded:
                     <div><span>.claude/</span>{found.detection.hasClaudeDir ? '있음' : '없음'}</div>
                   </section>
                   {found.detection.exists && found.detection.git === 'none' && <NotGitNotice />}
+                  {found.detection.exists && found.detection.git === 'none' && found.detection.parentRepo && <ParentRepoNotice parent={found.detection.parentRepo} />}
                   <label className="field">표시 이름
                     <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
                   </label>

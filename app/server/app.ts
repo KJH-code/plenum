@@ -8,14 +8,15 @@ import { fileURLToPath } from 'node:url';
 import { configDir, loadConfig, saveConfig } from './config.ts';
 import { detect } from './git.ts';
 import { readKit } from './kit.ts';
-import { folderCommand, editorCommand, launch } from './open.ts';
+import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
+import { absolutePath, checkCloneDir, checkKitRepo } from './paths.ts';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
 
-export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: typeof launch }
+export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher }
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
   const text = JSON.stringify(body);
@@ -70,14 +71,9 @@ export function createHandler(opts: ServerOptions = {}) {
       if (method === 'GET') return send(res, 200, { kitRepoPath: cfg.kitRepoPath, cloneDir: cfg.cloneDir, editorCommand: cfg.editorCommand, configDir: cfgDir });
       if (method === 'PUT') {
         const body = await readBody(req);
-        if (body.kitRepoPath !== undefined) {
-          if (body.kitRepoPath !== null && (typeof body.kitRepoPath !== 'string' || !body.kitRepoPath.trim())) throw new UserError(400, 'kit 레포 경로가 비어 있다');
-          cfg.kitRepoPath = body.kitRepoPath === null ? null : path.resolve(body.kitRepoPath.trim());
-        }
-        if (body.cloneDir !== undefined) {
-          if (typeof body.cloneDir !== 'string' || !body.cloneDir.trim()) throw new UserError(400, 'clone 폴더가 비어 있다');
-          cfg.cloneDir = path.resolve(body.cloneDir.trim());
-        }
+        // 검사를 다 통과해야 저장한다 (하나라도 틀리면 아무것도 안 바뀐다)
+        if (body.kitRepoPath !== undefined) cfg.kitRepoPath = body.kitRepoPath === null ? null : checkKitRepo(body.kitRepoPath);
+        if (body.cloneDir !== undefined) cfg.cloneDir = checkCloneDir(body.cloneDir);
         if (body.editorCommand !== undefined) {
           if (typeof body.editorCommand !== 'string' || !body.editorCommand.trim()) throw new UserError(400, '에디터 명령이 비어 있다');
           cfg.editorCommand = body.editorCommand.trim();
@@ -91,13 +87,14 @@ export function createHandler(opts: ServerOptions = {}) {
 
     if (a === 'versions' && method === 'GET') {
       const k = readKit(cfg.kitRepoPath);
-      return send(res, 200, compareVersions(cfg.kitRepoPath, k.ok ? { name: k.name, version: k.version } : null, env));
+      const v = compareVersions(cfg.kitRepoPath, k.ok ? { name: k.name, version: k.version } : null, env);
+      if (!k.ok && cfg.kitRepoPath) v.sourceProblem = k.message; // 경로는 있는데 kit을 못 읽으면 그 이유를 그대로
+      return send(res, 200, v);
     }
 
     if (a === 'inspect' && method === 'POST') {
       const body = await readBody(req);
-      if (typeof body.path !== 'string' || !body.path.trim()) throw new UserError(400, '폴더 경로가 비어 있다');
-      const dir = path.resolve(body.path.trim());
+      const dir = absolutePath(body.path, '폴더 경로');
       return send(res, 200, { path: dir, name: path.basename(dir), detection: await detect(dir) });
     }
 
@@ -118,13 +115,15 @@ export function createHandler(opts: ServerOptions = {}) {
       if (b && !c && method === 'DELETE') { removeProject(cfgDir, b); return send(res, 200, { ok: true }); }
       if (b && c === 'claude-md' && method === 'GET') return send(res, 200, { text: readClaudeMd(findProject(cfg, b)) });
       if (b && c === 'open-folder' && method === 'POST') {
-        const r = await launcher(folderCommand(findProject(cfg, b).path));
+        const r = await launcher(folderCommand(findProject(cfg, b).path), 'folder');
         if (!r.ok) throw new UserError(500, r.message);
         return send(res, 200, { ok: true });
       }
       if (b && c === 'open-editor' && method === 'POST') {
-        const r = await launcher(editorCommand(cfg.editorCommand, findProject(cfg, b).path));
-        if (!r.ok) throw new UserError(500, `${r.message} — 설정 › 일반에서 에디터 명령을 확인`);
+        let cmd;
+        try { cmd = editorCommand(cfg.editorCommand, findProject(cfg, b).path); } catch (e: any) { throw new UserError(400, e.message); }
+        const r = await launcher(cmd, 'editor');
+        if (!r.ok) throw new UserError(500, `에디터를 못 열었다 (${cfg.editorCommand}): ${r.message} — 설정 › 일반에서 에디터 명령을 확인`);
         return send(res, 200, { ok: true });
       }
     }

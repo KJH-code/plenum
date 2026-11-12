@@ -6,6 +6,7 @@ export interface Detection {
   github: { owner: string; repo: string; url: string } | null;
   hasClaudeMd: boolean;
   hasClaudeDir: boolean;
+  parentRepo: string | null;
 }
 export interface Project { id: string; name: string; path: string; source: 'local' | 'github'; url?: string; detection: Detection }
 export interface Settings { kitRepoPath: string | null; cloneDir: string; editorCommand: string; configDir: string }
@@ -15,8 +16,8 @@ export interface Worker {
   model: string; effort: string; tools: string; maxTurns: number | null; isolation: string | null; modes: ModeUse[];
 }
 export type KitResult = { ok: true; repo: string; name: string; version: string; stages: string[]; workers: Worker[] } | { ok: false; repo: string | null; message: string };
-export interface Side { version: string; hash: string | null; files: number; path: string }
-export interface Versions { plugin: string | null; source: Side | null; sourceProblem: string | null; installed: Side | null; installedProblem: string | null; status: 'same' | 'version-differs' | 'content-differs' | 'unknown' }
+export interface Side { version: string; hash: string | null; lfHash: string | null; files: number; crFiles: number; path: string }
+export interface Versions { plugin: string | null; source: Side | null; sourceProblem: string | null; installed: Side | null; installedProblem: string | null; status: 'same' | 'version-differs' | 'content-differs' | 'eol-differs' | 'unknown' }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {

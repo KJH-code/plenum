@@ -21,9 +21,10 @@ DevVault: Projects/jh-kit
 
 ## 명령
 - 컴파일러 테스트: `npm test` (루트)
-- 앱 (`app/`에서): `npm install` → `npm start`(웹 빌드 + 서버 127.0.0.1:4317, 사용 중이면 다음 빈 포트) · 개발은 `npm run serve` + `npm run dev`
+- 앱 (`app/`에서): `npm ci`(postinstall이 루트도 설치) → `npm start`(웹 빌드 + 서버 127.0.0.1:4317, 사용 중이면 다음 빈 포트) · 개발은 `npm run serve` + `npm run dev`
 - 앱 테스트: `npm test`(Vitest), `npm run typecheck`. 워커 대조 테스트는 옆 폴더 `../jh-kit`(또는 `PLENUM_TEST_KIT_REPO`)이 있어야 돈다. 없으면 건너뛴다고 표시된다
-- 화면: `npm run screens -- <kit 레포> <출력 폴더>` (Playwright, 다크)
+- 화면: `npm run screens -- <kit 레포> <출력 폴더>` (Playwright, 다크) · 브라우저 흐름: `npm run e2e [-- <kit 레포>]`
+- CI: `.github/workflows/test.yml` (ubuntu·windows, 한글 임시 폴더, 새 클론 연기 테스트)
 - 설정 파일: `%APPDATA%\plenum\config.json` (그 밖 `~/.config/plenum`, 테스트는 `PLENUM_CONFIG_DIR`). 설치본은 `~/.claude/plugins/installed_plugins.json`(`CLAUDE_CONFIG_DIR`)
 
 ## 규칙
@@ -32,5 +33,7 @@ DevVault: Projects/jh-kit
 - 컴파일러를 바꾸면 jh-kit 레포에서 `plenum-compile` 결과가 커밋된 `build/`와 같은지(또는 의도한 차이만 있는지) 확인한다. 태그를 올려야 kit 레포에 반영된다
 - 경로·명령 인자는 셸 없이 `execFile`에 배열로 넘긴다 (Windows 한글 사용자 이름 홈, 예: `C:\Users\홍길동`)
 - 색은 `theme.css` `:root` 토큰에만 쓴다. 글자 4.5:1, 테두리 3:1 (contrast 테스트). 모르는 값은 지어내지 않고 `[…]` 자리표시
-- 로컬 서버: 127.0.0.1에만, 바꾸는 요청은 `X-Plenum: 1` 헤더 필수, Host 검사
+- 로컬 서버: 127.0.0.1에만, 바꾸는 요청은 `X-Plenum: 1` 헤더 필수, Host 검사, CORS 허용 헤더는 보내지 않는다
+- 사용자가 넣는 경로는 절대 경로만(`server/paths.ts`). 상대 경로는 서버 cwd 기준이 돼서 엉뚱한 곳이 된다
+- 개발 의존성은 lock 파일(npm 11로 생성)로 고정. npm 10에서 lock 없이 `npm install` 하면 vitest 4에서 멈춘다
 - 커밋 메시지는 한국어. 커밋에 모델 이름을 넣지 않는다

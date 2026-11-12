@@ -69,4 +69,25 @@ describe('버전 비교', () => {
     fs.renameSync(path.join(s.build, 'agents', 'a.md'), path.join(s.build, 'agents', 'b.md'));
     expect(treeHash(s.build)!.hash).not.toBe(h1);
   });
+
+  test('줄바꿈만 다르면 → 줄바꿈만 다름, CR이 든 쪽을 센다 (버그 5)', () => {
+    const s = setup();
+    install(s.home, s.installPath, s.build);
+    fs.writeFileSync(path.join(s.build, 'agents', 'a.md'), '에이전트\r\n');
+    const v = compareVersions(s.repo, kit, { CLAUDE_CONFIG_DIR: s.home });
+    expect(v.status).toBe('eol-differs');
+    expect(v.source!.crFiles).toBe(1);
+    expect(v.installed!.crFiles).toBe(0);
+    // 내용까지 다르면 줄바꿈만 다른 게 아니다
+    fs.writeFileSync(path.join(s.build, 'agents', 'a.md'), '다른 내용\r\n');
+    expect(compareVersions(s.repo, kit, { CLAUDE_CONFIG_DIR: s.home }).status).toBe('content-differs');
+  });
+
+  test('바이너리 파일(NUL 포함)은 CR이 있어도 바꾸지 않는다', () => {
+    const s = setup();
+    fs.writeFileSync(path.join(s.build, 'bin.dat'), Buffer.from([0, 13, 10, 1]));
+    const t = treeHash(s.build)!;
+    expect(t.crFiles).toBe(0);
+    expect(t.lfHash).toBe(t.hash);
+  });
 });

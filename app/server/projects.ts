@@ -4,9 +4,9 @@ import path from 'node:path';
 import { loadConfig, saveConfig, type Config, type ProjectEntry } from './config.ts';
 import { detect, parseGitHubUrl, clone, type Detection } from './git.ts';
 
-export class UserError extends Error {
-  constructor(public status: number, message: string) { super(message); }
-}
+import { UserError } from './errors.ts';
+import { absolutePath } from './paths.ts';
+export { UserError };
 
 export interface ProjectView extends ProjectEntry { detection: Detection }
 
@@ -27,8 +27,7 @@ function addEntry(cfgDir: string | undefined, entry: Omit<ProjectEntry, 'id'>): 
 }
 
 export async function addLocal(cfgDir: string | undefined, input: string, name?: string): Promise<ProjectEntry> {
-  if (typeof input !== 'string' || !input.trim()) throw new UserError(400, '폴더 경로가 비어 있다');
-  const dir = path.resolve(input.trim());
+  const dir = absolutePath(input, '폴더 경로');
   if (!fs.existsSync(dir)) throw new UserError(400, `폴더가 없다: ${dir}`);
   if (!fs.statSync(dir).isDirectory()) throw new UserError(400, `폴더가 아니다: ${dir}`);
   return addEntry(cfgDir, { name: (name && name.trim()) || path.basename(dir), path: dir, source: 'local' });

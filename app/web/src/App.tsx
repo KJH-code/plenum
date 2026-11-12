@@ -12,16 +12,17 @@ export function VersionBar({ v }: { v: Versions | null }) {
   if (!v.source) {
     return (
       <span className="version" data-testid="version">
-        kit <a href={href.settings('kit')}>[kit 레포 경로 지정 안 됨]</a>
+        kit <a href={href.settings('kit')}>[{v.sourceProblem || 'kit 레포 경로 지정 안 됨'}]</a>
       </span>
     );
   }
   const short = (h: string | null) => (h ? h.slice(0, 12) : '[해시 없음]');
   const badge = {
     same: <span className="badge ok">같음</span>,
-    'version-differs': <span className="badge warn">버전 다름</span>,
-    'content-differs': <span className="badge warn">내용 다름</span>,
-    unknown: <span className="badge">비교 못 함</span>,
+    'version-differs': <a className="badge warn" href={href.settings('kit')}>버전 다름</a>,
+    'content-differs': <a className="badge warn" href={href.settings('kit')}>내용 다름</a>,
+    'eol-differs': <a className="badge warn" href={href.settings('kit')}>줄바꿈만 다름</a>,
+    unknown: <a className="badge" href={href.settings('kit')}>비교 못 함</a>,
   }[v.status];
   return (
     <span className="version" data-testid="version" title={`소스 ${short(v.source.hash)} · 설치본 ${v.installed ? short(v.installed.hash) : '-'}`}>
@@ -59,7 +60,7 @@ export function App() {
         </header>
       )}
       {route.page === 'home' && <Home reload={reload} onAdd={() => setAdding(true)} onChanged={onChanged} />}
-      {route.page === 'settings' && <SettingsPage cat={route.cat} onChanged={onChanged} />}
+      {route.page === 'settings' && <SettingsPage cat={route.cat} onChanged={onChanged} versions={versions} />}
       {route.page === 'project' && <ProjectPage id={route.id} />}
       {adding && <AddProject onClose={() => setAdding(false)} onAdded={() => { setAdding(false); onChanged(); }} />}
     </div>

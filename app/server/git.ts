@@ -13,6 +13,7 @@ export interface Detection {
   github: GitHubRef | null;
   hasClaudeMd: boolean;
   hasClaudeDir: boolean;
+  parentRepo: string | null; // 이 폴더엔 .git이 없는데 상위 폴더가 레포면 그 맨 위 폴더 (git 작업이 거기에 걸린다)
 }
 
 // https://github.com/<o>/<r>(.git)(/) 또는 git@github.com:<o>/<r>(.git) 만 받는다
@@ -28,12 +29,17 @@ export function parseGitHubUrl(input: string): GitHubRef | null {
 
 export async function detect(dir: string): Promise<Detection> {
   const exists = fs.existsSync(dir) && fs.statSync(dir).isDirectory();
-  const base: Detection = { exists, git: 'none', branch: null, github: null, hasClaudeMd: false, hasClaudeDir: false };
+  const base: Detection = { exists, git: 'none', branch: null, github: null, hasClaudeMd: false, hasClaudeDir: false, parentRepo: null };
   if (!exists) return base;
   base.hasClaudeMd = fs.existsSync(path.join(dir, 'CLAUDE.md'));
   base.hasClaudeDir = fs.existsSync(path.join(dir, '.claude'));
   // .git 은 폴더(일반 클론)거나 파일(worktree·submodule)이다
-  if (!fs.existsSync(path.join(dir, '.git'))) return base;
+  if (!fs.existsSync(path.join(dir, '.git'))) {
+    // .git 이 없어도 git 은 위로 올라가며 레포를 찾는다. 상위가 레포면 알려 준다 (git 판별은 '아님' 그대로)
+    const top = await run('git', ['rev-parse', '--show-toplevel'], { cwd: dir });
+    if (top.code === 0 && top.stdout.trim()) base.parentRepo = path.resolve(top.stdout.trim());
+    return base;
+  }
   const head = await run('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { cwd: dir });
   base.git = head.code === 0 ? 'ok' : 'empty';
   const br = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: dir });

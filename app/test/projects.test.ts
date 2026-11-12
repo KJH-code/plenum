@@ -43,6 +43,7 @@ describe('감지', () => {
     expect(r.status).toBe(201);
     expect(r.body).toMatchObject({ name: '영상 편집', path: dir, source: 'local' });
     expect(r.body.detection).toMatchObject({ exists: true, git: 'none', github: null, hasClaudeMd: false });
+    if (!process.env.PLENUM_TMP_IN_REPO) expect(r.body.detection.parentRepo).toBeNull();
   });
 
   test('커밋 0개 레포 = 커밋 없음', async () => {
@@ -63,6 +64,20 @@ describe('감지', () => {
     git(dir, 'remote', 'add', 'origin', 'git@github.com:KJH-code/plenum.git');
     const r = await srv.call('POST', '/api/projects', { kind: 'local', path: dir });
     expect(r.body.detection).toMatchObject({ git: 'ok', branch: 'dev', github: { owner: 'KJH-code', repo: 'plenum', url: 'https://github.com/KJH-code/plenum' } });
+  });
+
+  test('상위 폴더가 레포인 폴더: git 아님 + 상위 레포 경로 (홈에 .git이 있던 경우)', async () => {
+    const home = path.join(root, '상위 레포 홈');
+    const child = path.join(home, '문서', '영상 편집');
+    fs.mkdirSync(child, { recursive: true });
+    git(home, 'init', '-q', '-b', 'main'); // 커밋 없는 .git (노트북 홈에서 실제로 있던 꼴)
+    const r = await srv.call('POST', '/api/inspect', { path: child });
+    expect(r.body.detection).toMatchObject({ git: 'none', branch: null, github: null });
+    expect(fs.realpathSync(r.body.detection.parentRepo)).toBe(fs.realpathSync(home));
+    // 자기 .git 이 있는 레포는 상위가 레포여도 자기 것으로 본다
+    git(child, 'init', '-q', '-b', 'own');
+    const own = await srv.call('POST', '/api/inspect', { path: child });
+    expect(own.body.detection).toMatchObject({ git: 'empty', branch: 'own', parentRepo: null });
   });
 
   test('같은 폴더를 두 번 넣으면 409, 없는 폴더는 400', async () => {

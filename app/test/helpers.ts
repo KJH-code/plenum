@@ -32,8 +32,9 @@ export async function inProcess(opts: Parameters<typeof createHandler>[0] = {}) 
 
 // 실제 서버 프로세스 (tsx server/main.ts). 표준출력의 "Plenum: http://127.0.0.1:<port>" 줄에서 포트를 읽는다
 export async function spawnServer(env: Record<string, string>): Promise<{ base: string; child: ChildProcess; stop: () => Promise<void> }> {
-  const tsx = path.join(APP, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx');
-  const child = spawn(tsx, ['server/main.ts'], { cwd: APP, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+  // tsx.cmd 를 셸로 부르지 않고 node 로 tsx cli 를 직접 부른다 (Windows 한글·공백 경로에서도 인자 그대로)
+  const tsxCli = path.join(APP, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  const child = spawn(process.execPath, [tsxCli, 'server/main.ts'], { cwd: APP, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   const base = await new Promise<string>((resolve, reject) => {
     let out = '';
     const t = setTimeout(() => reject(new Error(`서버가 30초 안에 뜨지 않았다: ${out}`)), 30000);

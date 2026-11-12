@@ -1,0 +1,71 @@
+# Linux 테스트로는 안 잡히는 Windows 경로(cmd.exe 호출, 한글 경로, CRLF)를 windows-latest에서 같이 돌린다.
+# 임시 폴더(TEMP·TMPDIR)를 한글·공백 이름 폴더로 바꿔서 테스트가 만드는 경로가 전부 한글을 지나게 한다.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 한글 이름 임시 폴더
+        run: |
+          dir="$RUNNER_TEMP/홍길동 테스트"
+          mkdir -p "$dir"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            win="$(cygpath -w "$dir")"
+            { echo "TEMP=$win"; echo "TMP=$win"; echo "PLENUM_TEMP=$win"; } >> "$GITHUB_ENV"
+          else
+            { echo "TMPDIR=$dir"; echo "PLENUM_TEMP=$dir"; } >> "$GITHUB_ENV"
+          fi
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+
+      - name: 컴파일러 (Node 18 이상, 루트)
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: 새 클론처럼 app/ 만 설치 (postinstall 이 루트도 설치하는지)
+        run: |
+          git clone --quiet . "$PLENUM_TEMP/새 클론"
+          cd "$PLENUM_TEMP/새 클론/app"
+          npm ci --no-audit --no-fund
+          test -d ../node_modules/js-yaml
+          npm run build
+          node e2e/smoke.mjs
+
+      - name: 앱 타입 검사·테스트
+        working-directory: app
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test
+
+      - name: 브라우저 흐름 (Linux만)
+        if: runner.os == 'Linux'
+        working-directory: app
+        run: |
+          npx playwright install --with-deps chromium
+          npm run e2e

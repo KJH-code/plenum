@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { api, type KitResult, type Settings, type Worker } from './api';
+import { api, type KitResult, type Settings, type Versions, type Worker } from './api';
 import { href } from './route';
 import { Back } from './icons';
 
@@ -7,7 +7,7 @@ const CATS: [id: string, label: string][] = [
   ['general', '일반'], ['kit', 'kit'], ['workers', '워커'], ['modes', '모드'], ['providers', '모델 · 프로바이더'], ['rules', '규칙'], ['account', '계정 · 한도'],
 ];
 
-export function SettingsPage({ cat, onChanged }: { cat: string; onChanged: () => void }) {
+export function SettingsPage({ cat, onChanged, versions }: { cat: string; onChanged: () => void; versions: Versions | null }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { api.settings().then(setSettings).catch((e) => setError(e.message)); }, []);
@@ -25,7 +25,7 @@ export function SettingsPage({ cat, onChanged }: { cat: string; onChanged: () =>
       <main>
         {error && <p className="error">{error}</p>}
         {cat === 'general' && settings && <General s={settings} save={save} />}
-        {cat === 'kit' && settings && <KitSettings s={settings} save={save} />}
+        {cat === 'kit' && settings && <KitSettings s={settings} save={save} v={versions} />}
         {cat === 'workers' && settings && <Workers kitPath={settings.kitRepoPath} />}
         {!['general', 'kit', 'workers'].includes(cat) && (
           <>
@@ -69,12 +69,53 @@ function General({ s, save }: { s: Settings; save: (p: Partial<Settings>) => Pro
   );
 }
 
-function KitSettings({ s, save }: { s: Settings; save: (p: Partial<Settings>) => Promise<void> }) {
+function KitSettings({ s, save, v }: { s: Settings; save: (p: Partial<Settings>) => Promise<void>; v: Versions | null }) {
   return (
     <>
       <h1>kit</h1>
-      <PathField label="kit 레포 경로" value={s.kitRepoPath ?? ''} onSave={(v) => save({ kitRepoPath: v })} hint="kit/kit.yaml 과 build/claude-code/ 가 있는 레포 (예: jh-kit 클론)" />
+      <PathField label="kit 레포 경로" value={s.kitRepoPath ?? ''} onSave={(val) => save({ kitRepoPath: val })}
+        hint="kit 레포를 clone한 폴더의 전체 경로 (kit/kit.yaml 과 build/claude-code/ 가 있어야 한다). owner/repo·상대 경로는 받지 않는다" />
+      {v && <VersionDetail v={v} />}
     </>
+  );
+}
+
+function VersionDetail({ v }: { v: Versions }) {
+  const row = (label: string, side: Versions['source'], problem: string | null) => (
+    <div><span>{label}</span>{side
+      ? <span className="mono">{side.version} · 파일 {side.files} · 해시 {side.hash ? side.hash.slice(0, 12) : '[없음]'}{side.crFiles > 0 ? ` · CRLF 파일 ${side.crFiles}` : ''}<br />{side.path}</span>
+      : <span>[{problem || '모름'}]</span>}</div>
+  );
+  const crSide = v.source && v.installed ? (v.source.crFiles > 0 ? 'source' : v.installed.crFiles > 0 ? 'installed' : null) : null;
+  return (
+    <section aria-label="소스와 설치본" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <h2 style={{ margin: 0, fontSize: 15 }}>소스와 설치본</h2>
+      <div className="detect" style={{ gridTemplateColumns: '1fr' }}>
+        {row('소스', v.source, v.sourceProblem)}
+        {row('설치본', v.installed, v.installedProblem)}
+      </div>
+      {v.status === 'eol-differs' && (
+        <div className="notice" role="note" data-testid="eol-notice">
+          <div>
+            <b>줄바꿈(CRLF/LF)만 다르다 — 내용은 같다</b>
+            {crSide === 'source' ? (
+              <>
+                <div>소스(kit 레포 클론)에 CRLF 파일이 {v.source!.crFiles}개 있다. <code>.gitattributes</code>가 생기기 전에 받은 Windows 클론에서 생긴다. kit 레포에서 커밋 안 한 변경이 없는지 확인한 뒤:</div>
+                <pre className="doc">{'git status\ngit rm -r -q --cached .\ngit reset -q --hard'}</pre>
+                <div className="hint">git reset --hard 는 커밋 안 한 변경을 지운다. git status 가 깨끗할 때만.</div>
+              </>
+            ) : crSide === 'installed' ? (
+              <>
+                <div>설치본에 CRLF 파일이 {v.installed!.crFiles}개 있다. 설치본을 다시 받는다:</div>
+                <pre className="doc">{`claude plugin marketplace update kjh-code\nclaude plugin update ${v.plugin}@kjh-code`}</pre>
+              </>
+            ) : <div>[어느 쪽에 CR이 있는지 모름]</div>}
+          </div>
+        </div>
+      )}
+      {v.status === 'content-differs' && <p className="hint">버전은 같은데 파일 내용이 다르다. 소스를 고친 뒤 버전을 안 올렸거나, 설치본이 옛 커밋이다.</p>}
+      {v.status === 'version-differs' && <p className="hint">설치본을 소스 버전으로 올리려면: <code>claude plugin marketplace update kjh-code</code> 후 <code>claude plugin update {v.plugin}@kjh-code</code></p>}
+    </section>
   );
 }
 

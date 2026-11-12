@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Project } from './api';
-import { GitBadges, NotGitNotice, iconColor, initial, subtitle } from './common';
+import { GitBadges, NotGitNotice, ParentRepoNotice, iconColor, initial, subtitle } from './common';
 import { Play, Plus } from './icons';
 import { href } from './route';
 
@@ -79,6 +79,7 @@ function SidePanel({ p, onChanged }: { p: Project; onChanged: () => void }) {
         <div><GitBadges p={p} /></div>
       </div>
       {d.exists && d.git === 'none' && <NotGitNotice />}
+      {d.exists && d.git === 'none' && d.parentRepo && <ParentRepoNotice parent={d.parentRepo} />}
       <a className="btn primary" href={href.project(p.id)}><Play />열기</a>
       <button type="button" className="action" disabled={!d.exists} onClick={act(() => api.openFolder(p.id), '폴더를 열었다')}>폴더 열기</button>
       <button type="button" className="action" disabled={!d.hasClaudeMd} title={d.hasClaudeMd ? undefined : 'CLAUDE.md가 없다'}

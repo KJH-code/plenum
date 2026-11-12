@@ -83,9 +83,9 @@ test('kit 레포가 없으면 워커 대신 이유를 돌려준다', async () =>
   const srv = await inProcess({ cfgDir: path.join(tmpDir(), 'cfg') });
   const r = (await srv.call('GET', '/api/kit/workers')).body;
   expect(r).toMatchObject({ ok: false, message: 'kit 레포 경로가 지정되지 않았다' });
-  await srv.call('PUT', '/api/settings', { kitRepoPath: tmpDir() });
-  const r2 = (await srv.call('GET', '/api/kit/workers')).body;
-  expect(r2.ok).toBe(false);
-  expect(r2.message).toMatch(/kit\/kit\.yaml이 없다/);
+  const bad = await srv.call('PUT', '/api/settings', { kitRepoPath: tmpDir() });
+  expect(bad.status).toBe(400);
+  expect(bad.body.error).toMatch(/kit\/kit\.yaml이 없다/);
+  expect((await srv.call('GET', '/api/settings')).body.kitRepoPath).toBeNull();
   await srv.close();
 });

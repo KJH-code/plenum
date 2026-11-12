@@ -6,8 +6,17 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const COMPILER_LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'compiler', 'lib');
-const { loadKit } = require(path.join(COMPILER_LIB, 'kit.js'));
-const { validate } = require(path.join(COMPILER_LIB, 'claude-code.js'));
+// 컴파일러는 루트 패키지라 그 의존성(js-yaml)은 루트 node_modules에 있다. app/ 의 npm ci·install 이 postinstall 로 루트도 설치한다.
+let compiler: { loadKit: any; validate: any };
+try {
+  compiler = { loadKit: require(path.join(COMPILER_LIB, 'kit.js')).loadKit, validate: require(path.join(COMPILER_LIB, 'claude-code.js')).validate };
+} catch (e: any) {
+  if (e && e.code === 'MODULE_NOT_FOUND') {
+    throw new Error(`컴파일러 의존성이 없다 (${String(e.message).split('\n')[0]}). plenum 루트에서 npm ci 를 하거나 app/ 에서 npm ci 를 다시 한다 (postinstall 이 루트를 설치한다)`);
+  }
+  throw e;
+}
+const { loadKit, validate } = compiler;
 
 // 모드 파일 id → 화면 이름. 순서도 이 순서 (mode 스킬의 선택지 순서). tables/ 중에는 check 만 "쓰는 모드"로 센다
 // (tables/workers.yaml 은 references/workers.md 전체 목록이라 모드가 아니다).
