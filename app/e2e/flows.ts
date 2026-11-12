@@ -78,14 +78,19 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   const run = page.getByTestId('save-run');
   const waitRemoteSame = () => remoteLine.filter({ hasText: '원격 main과 같음' }).waitFor(T);
   const steps = async () => Object.fromEntries(await Promise.all(['check', 'build', 'commit', 'push'].map(async (k) => [k, await page.getByTestId(`step-${k}`).getAttribute('data-state')])));
+  const jobId = () => page.evaluate(() => document.querySelector('[data-testid=save-run]')?.getAttribute('data-job-id') ?? null);
+  // 이전 저장의 결과 패널(취소·실패)이 남아 있어도 넘어가지 않게: job id 가 바뀐 새 저장이 끝날 때까지 기다린다
+  const settledAfter = (prev: string | null) => page.waitForFunction((prev) => {
+      const el = document.querySelector('[data-testid=save-run]');
+      const s = el?.getAttribute('data-status');
+      return !!el && el.getAttribute('data-job-id') !== prev && !!s && s !== 'running';
+    }, prev, T);
   const confirmSave = async () => {
     await saveBtn.click();
     await page.getByTestId('save-dialog').waitFor(T);
+    const prev = await jobId();
     await page.getByRole('button', { name: 'commit · push' }).click();
-    await page.waitForFunction(() => {
-      const s = document.querySelector('[data-testid=save-run]')?.getAttribute('data-status');
-      return s && s !== 'running';
-    }, null, T);
+    await settledAfter(prev);
   };
 
   await page.goto(`${base}/#/settings/workers`);
@@ -203,6 +208,7 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   assert.match(ft, /빌드 ERROR · 계층 Sonnet high가 kit\.yaml의 tiers에 없다\. 처음 쓰는 조합이면 tiers에 행을 하나 추가해야 한다\./);
   assert.match(ft, /아무것도 바뀌지 않았다\. 워커 파일은 원래대로다\./);
   assert.equal((await steps()).check, 'fail');
+  assert.equal(await page.getByTestId('step-check').locator('.hint').innerText(), 'ERROR · 계층 없음');
   assert.equal(kr.head(), base1);
   assert.equal(kr.porcelain(), '');
   const n0 = sk.opened.length;
@@ -225,6 +231,7 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   const pt = await page.getByTestId('push-failed').innerText();
   assert.match(pt, new RegExp(`push 실패 · 원격 main이 그사이 앞섰다\\. 커밋 ${pushShort}는 로컬에만 있다\\.`));
   assert.equal((await steps()).push, 'fail');
+  assert.equal(await page.getByTestId('step-push').locator('.hint').innerText(), '원격이 앞섬');
   await page.getByRole('button', { name: '커밋 취소' }).click();
   await page.getByTestId('save-cancelled').waitFor(T);
   assert.equal(kr.head(), base2, '커밋 취소 뒤 HEAD 가 저장 전이 아니다');
@@ -233,11 +240,9 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   await confirmSave();
   assert.equal(await run.getAttribute('data-status'), 'push-failed');
   sk.pushTo(null);
+  const prevRetry = await jobId();
   await page.getByRole('button', { name: '받아와서 다시 push' }).click();
-  await page.waitForFunction(() => {
-    const s = document.querySelector('[data-testid=save-run]')?.getAttribute('data-status');
-    return s === 'done' || s === 'failed';
-  }, null, T);
+  await settledAfter(prevRetry);
   assert.equal(await run.getAttribute('data-status'), 'done', await run.innerText());
   assert.equal(kr.remoteHead(), kr.head());
   pass(`push 거부 → push 실패 패널(${pushShort}) → 커밋 취소(초안 남음) → 받아와서 다시 push → 저장 끝`);

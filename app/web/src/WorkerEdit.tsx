@@ -152,6 +152,7 @@ export function Workers({ kitPath, versions, refreshVersions, drafts, setDrafts 
     const { worker, model, effort } = preview;
     setPreview(null);
     setActionErr(null);
+    setJob(null); // 이전 저장의 결과 패널을 새 저장이 시작되기 전에 치운다
     try { follow(await api.startSave(worker, model, effort)); } catch (e: any) { setActionErr(e.message); }
   };
   const retry = async () => {
@@ -351,6 +352,17 @@ function SaveDialog({ preview, onCancel, onConfirm }: {
   );
 }
 
+// 단계 카드 부제. 실패 카드는 무엇이 실패했는지 (서버 detail 은 시작할 때 쓴 단계 설명이라 그대로 두면 "검사" 같은 말만 남는다)
+function stepDetail(job: SaveJob, s: SaveJob['steps'][number]): string {
+  if (s.state === 'skip') return '건너뜀';
+  if (s.state === 'wait') return '대기';
+  if (s.state === 'fail') {
+    if (s.key === 'push') return job.pushError?.kind === 'rejected' ? '원격이 앞섬' : 'push 실패';
+    return job.error?.kind === 'tier' ? 'ERROR · 계층 없음' : 'ERROR';
+  }
+  return s.detail || STATE_TEXT[s.state];
+}
+
 function SaveResult({ job, acting, versions, plugin, onOpen, onRetry, onCancel, onClose, onInstalled }: {
   job: SaveJob; acting: boolean; versions: Versions | null; plugin: string;
   onOpen: (file: string, line?: number) => void; onRetry: () => void; onCancel: () => void; onClose: () => void; onInstalled: () => void;
@@ -362,13 +374,13 @@ function SaveResult({ job, acting, versions, plugin, onOpen, onRetry, onCancel, 
     : versions.installed ? `설치본은 아직 ${versions.installed.version}이라 Claude Code에는 반영 전이다.`
     : `설치본: [${versions.installedProblem || '모름'}]`;
   return (
-    <div className="run" data-testid="save-run" data-status={job.status}>
+    <div className="run" data-testid="save-run" data-status={job.status} data-job-id={job.id}>
       <span className="hint">{job.worker} · {job.model} {job.effort}</span>
       <ol className="steps" aria-label="저장 단계">
         {job.steps.map((s) => (
           <li key={s.key} className="step" data-state={s.state} data-testid={`step-${s.key}`}>
             <div className="step-head"><span className="step-icon" aria-hidden="true">{STATE_ICON[s.state]}</span>{STEP_LABEL[s.key]}<span className="sr-only">: {STATE_TEXT[s.state]}</span></div>
-            <div className="hint mono">{s.state === 'skip' ? '건너뜀' : s.state === 'wait' ? '대기' : s.detail || STATE_TEXT[s.state]}</div>
+            <div className="hint mono">{stepDetail(job, s)}</div>
           </li>
         ))}
       </ol>

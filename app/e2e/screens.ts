@@ -81,10 +81,13 @@ const row = (name: string) => page.getByTestId('worker-row').filter({ has: page.
 const model = page.getByLabel('AI', { exact: true });
 const effort = page.getByLabel('노력도', { exact: true });
 const run = page.getByTestId('save-run');
-const settled = () => page.waitForFunction(() => {
-  const s = document.querySelector('[data-testid=save-run]')?.getAttribute('data-status');
-  return s && s !== 'running';
-}, null, T);
+const jobId = () => page.evaluate(() => document.querySelector('[data-testid=save-run]')?.getAttribute('data-job-id') ?? null);
+// 이전 결과 패널이 남아 있어도 넘어가지 않게: job id 가 바뀐 새 저장이 끝날 때까지
+const settled = (prev: string | null) => page.waitForFunction((prev) => {
+      const el = document.querySelector('[data-testid=save-run]');
+      const s = el?.getAttribute('data-status');
+      return !!el && el.getAttribute('data-job-id') !== prev && !!s && s !== 'running';
+    }, prev, T);
 const remoteSame = () => page.getByTestId('remote-line').filter({ hasText: '원격 main과 같음' }).waitFor(T);
 
 await page.goto(`${base}/#/settings/workers`);
@@ -109,11 +112,12 @@ await page.getByRole('button', { name: '저장…' }).click();
 await page.getByTestId('save-dialog').waitFor(T);
 await shot('7-save-confirm.png');
 
+let prev = await jobId();
 await page.getByRole('button', { name: 'commit · push' }).click();
 await run.waitFor(T);
 if (await run.getAttribute('data-status') === 'running') await shot('8-save-running.png', true);
 else console.log('8-save-running.png: 저장이 너무 빨리 끝나 진행 중 장면을 못 찍었다');
-await settled();
+await settled(prev);
 sk.setInstallVersion('0.0.2');
 await page.getByRole('button', { name: '설치본에 반영' }).click();
 await page.waitForFunction(() => /ok|fail/.test(document.querySelector('[data-testid=install-result]')?.getAttribute('data-status') || ''), null, T);
@@ -127,8 +131,9 @@ await row('impl').click();
 await model.selectOption('sonnet');
 await effort.selectOption('high');
 await page.getByRole('button', { name: '저장…' }).click();
+prev = await jobId();
 await page.getByRole('button', { name: 'commit · push' }).click();
-await settled();
+await settled(prev);
 await page.getByTestId('save-failed').waitFor(T);
 await shot('10-build-error.png', true);
 await page.getByRole('button', { name: '되돌리기' }).click();
@@ -139,8 +144,9 @@ sk.pushTo(sk.divergedRemote());
 await row('rev').click();
 await effort.selectOption('medium');
 await page.getByRole('button', { name: '저장…' }).click();
+prev = await jobId();
 await page.getByRole('button', { name: 'commit · push' }).click();
-await settled();
+await settled(prev);
 await page.getByTestId('push-failed').waitFor(T);
 await shot('11-push-failed.png', true);
 await page.getByRole('button', { name: '커밋 취소' }).click();
