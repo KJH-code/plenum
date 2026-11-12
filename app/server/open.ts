@@ -69,7 +69,8 @@ export function runCommand(c: Command, opts: { cwd?: string; env?: NodeJS.Proces
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(c.cmd, c.args, { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments: !!c.verbatim });
+      // POSIX는 새 프로세스 그룹으로 띄워 시간 초과 때 그룹째(-pid) 죽인다
+      child = spawn(c.cmd, c.args, { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments: !!c.verbatim, detached: process.platform !== 'win32' });
     } catch (e: any) {
       resolve({ code: null, output: '', timedOut: false, error: e.message });
       return;
@@ -79,9 +80,21 @@ export function runCommand(c: Command, opts: { cwd?: string; env?: NodeJS.Proces
     child.stderr!.on('data', (d: Buffer) => chunks.push(d));
     let timedOut = false;
     let done = false;
-    const t = setTimeout(() => { timedOut = true; child.kill(); }, opts.timeoutMs ?? 120000);
-    child.once('error', (e) => { if (!done) { done = true; clearTimeout(t); resolve({ code: null, output: decodeOutput(Buffer.concat(chunks)), timedOut, error: `${c.cmd} 실행 실패: ${e.message}` }); } });
-    child.once('close', (code) => { if (!done) { done = true; clearTimeout(t); resolve({ code, output: decodeOutput(Buffer.concat(chunks)), timedOut }); } });
+    let grace: NodeJS.Timeout | undefined;
+    const finish = (r: CommandResult) => { if (!done) { done = true; clearTimeout(t); if (grace) clearTimeout(grace); resolve(r); } };
+    // 시간이 넘으면 프로세스 트리째 죽인다(POSIX는 프로세스 그룹). Windows에서 .cmd 는 cmd.exe 가 감싸서 child.kill() 은 cmd.exe 만 죽이고
+    // 그 아래 node 등 손자 프로세스가 남아 출력 파이프를 붙잡는다 → taskkill /T /F. 그래도 파이프가 안 닫히면 2초 뒤 끊고 끝낸다.
+    const t = setTimeout(() => {
+      timedOut = true;
+      if (process.platform === 'win32' && child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill());
+      else { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
+      grace = setTimeout(() => {
+        child.stdout!.destroy(); child.stderr!.destroy(); child.unref();
+        finish({ code: null, output: decodeOutput(Buffer.concat(chunks)), timedOut });
+      }, 2000);
+    }, opts.timeoutMs ?? 120000);
+    child.once('error', (e) => finish({ code: null, output: decodeOutput(Buffer.concat(chunks)), timedOut, error: `${c.cmd} 실행 실패: ${e.message}` }));
+    child.once('close', (code) => finish({ code, output: decodeOutput(Buffer.concat(chunks)), timedOut }));
   });
 }
 

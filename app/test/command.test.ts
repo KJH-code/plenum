@@ -1,4 +1,7 @@
 // 명령 만들기(commandFor·editorCommand의 줄 열기)와 runCommand. 실제 실행은 node 로만 한다.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { commandFor, editorCommand, isVsCode, runCommand } from '../server/open.ts';
 
@@ -45,6 +48,23 @@ describe('runCommand', () => {
     const r = await runCommand({ cmd: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'] }, { timeoutMs: 300 });
     expect(r.timedOut).toBe(true);
   });
+  // 감싼 셸만 죽고 손자 프로세스가 출력 파이프를 붙잡아도 시간 제한이 듣는다 (Windows .cmd = cmd.exe → node 와 같은 꼴)
+  it('손자 프로세스가 남아도 시간 제한 안에 끝난다', async () => {
+    const forever = `"${process.execPath}" -e "setTimeout(() => {}, 60000)"`;
+    let c;
+    if (process.platform === 'win32') {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 hang-'));
+      const cmdFile = path.join(dir, 'hang.cmd');
+      fs.writeFileSync(cmdFile, `@${forever}\r\n`);
+      c = commandFor(cmdFile, []);
+    } else {
+      c = { cmd: '/bin/sh', args: ['-c', `${forever}; true`] };
+    }
+    const t0 = Date.now();
+    const r = await runCommand(c, { timeoutMs: 500 });
+    expect(r.timedOut).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(10000);
+  }, 20000);
   it('없는 프로그램은 error', async () => {
     const r = await runCommand({ cmd: '/no/such/prog-xyz', args: [] });
     expect(r.code).toBe(null);
