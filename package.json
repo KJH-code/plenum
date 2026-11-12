@@ -1,6 +1,6 @@
 {
   "name": "plenum",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Plenum — Claude Code 세션 런처. 루트 패키지는 kit 컴파일러(plenum-compile·plenum-pack)이고 앱은 app/에 따로 있다",
   "license": "MIT",
   "engines": {

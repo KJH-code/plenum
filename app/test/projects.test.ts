@@ -124,19 +124,27 @@ describe('동작', () => {
     const list = (await srv.call('GET', '/api/projects')).body;
     const p = list.find((x: any) => x.name === '영상 편집');
     launched.length = 0;
+    // 에디터 명령은 PATH에서 실제로 찾으므로 있는 실행 파일(node)을 쓴다. 실행은 가짜 launcher가 가로챈다
+    expect((await srv.call('PUT', '/api/settings', { editorCommand: process.execPath })).status).toBe(200);
     expect((await srv.call('POST', `/api/projects/${p.id}/open-folder`)).status).toBe(200);
     expect((await srv.call('POST', `/api/projects/${p.id}/open-editor`)).status).toBe(200);
     expect(launched[0]).toEqual(folderCommand(p.path));
     expect(launched[0].args).toEqual([p.path]);
-    expect(launched[1]).toEqual(editorCommand('code', p.path));
+    expect(launched[1].args.join(' ')).toContain(p.path);
   });
 
-  test('Windows 명령 모양 (C:\\Users\\홍길동)', () => {
+  test('Windows 명령 모양 (C:\\Users\\홍길동): PATH에서 code.cmd 절대 경로를 찾아 cmd /s /c 로, .exe 는 바로', () => {
     const dir = 'C:\\Users\\홍길동\\Documents\\GitHub\\영상 편집';
+    const vsBin = 'C:\\Users\\홍길동\\AppData\\Local\\Programs\\Microsoft VS Code\\bin';
+    const env = { PATH: `C:\\Windows\\system32;${vsBin}`, PATHEXT: '.COM;.EXE;.BAT;.CMD' };
+    const files = new Set([`${vsBin}\\code.cmd`, 'C:\\Windows\\system32\\notepad.exe']);
+    const isFile = (f: string) => files.has(f);
     expect(folderCommand(dir, 'win32')).toEqual({ cmd: 'explorer.exe', args: [dir] });
-    expect(editorCommand('code', dir, 'win32')).toEqual({ cmd: 'cmd.exe', args: ['/d', '/s', '/c', `""code" "${dir}""`], verbatim: true });
+    expect(editorCommand('code', dir, 'win32', env, isFile)).toEqual({ cmd: 'cmd.exe', args: ['/d', '/s', '/c', `""${vsBin}\\code.cmd" "${dir}""`], verbatim: true });
+    expect(editorCommand('notepad', dir, 'win32', env, isFile)).toEqual({ cmd: 'C:\\Windows\\system32\\notepad.exe', args: [dir] });
+    expect(() => editorCommand('nope', dir, 'win32', env, isFile)).toThrow(/PATH에서 못 찾았다/);
     expect(folderCommand('/a b', 'darwin')).toEqual({ cmd: 'open', args: ['/a b'] });
-    expect(() => editorCommand('code', 'C:\\a"b', 'win32')).toThrow();
+    expect(() => editorCommand('code', 'C:\\a"b', 'win32', env, isFile)).toThrow();
   });
 
   test('CLAUDE.md 없으면 404', async () => {

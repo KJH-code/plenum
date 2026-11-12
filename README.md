@@ -61,6 +61,10 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 
 ## 변경 기록
 
+### 0.1.2
+- 외부 에디터가 Windows에서 안 열리던 원인: `code.cmd`를 따옴표 붙은 이름(`"code"`)으로 PATH에서 찾아 부르면 cmd가 배치 파일 안의 `%~dp0`를 현재 폴더로 잡아서 `"%~dp0..\Code.exe"`를 못 찾았다(종료 코드 9009). 이제 PATH·PATHEXT에서 절대 경로를 먼저 찾아 그 경로로 부른다. `.exe`는 cmd 없이 바로. PATH에 없으면 실행 전에 이유를 보여 준다
+- cmd 오류 메시지(한국어 Windows는 CP949)를 깨지지 않게 읽는다
+
 ### 0.1.1
 - 새 클론에서 `app/`만 설치하면 `Cannot find module 'js-yaml'` — app의 postinstall이 루트를 설치한다
 - kit 레포·clone 폴더·로컬 프로젝트 경로: 상대 경로·`owner/repo`·URL은 이유와 함께 거부, kit은 `kit/kit.yaml`·`build/claude-code`가 있어야 저장. 상단 버전 표시는 "지정 안 됨" 대신 실제 문제를 보여 준다
