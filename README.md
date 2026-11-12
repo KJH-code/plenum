@@ -66,7 +66,8 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 - 저장: 확인창(바뀌는 줄·커밋 메시지·작성자) → 검사(git 상태·저장 직전 fetch·버전 일치·kit 사본을 kit 레포 자기 컴파일러로 임시 빌드) → 빌드 → commit → push. 워커 파일은 머리말 `model:`·`effort:` 줄만 바뀌고, 저장마다 버전 patch +1(`kit/kit.yaml` 줄 + `npm version patch --no-git-tag-version`)
   - 검사·빌드가 실패하면 레포는 그대로. 처음 쓰는 계층은 빌드 ERROR + `kit.yaml` 열기, 산문 WARN은 `파일:줄`로 보여 주고 막지 않는다
   - main이 아님·작업 트리 변경·push 안 된 커밋·뒤처짐·갈라짐이면 저장을 막는다. 뒤처짐은 "받아오기"(`git pull --ff-only`)
-  - push 거부는 자동으로 합치지 않고 멈춘다: "받아와서 다시 push"(우리 커밋을 되돌리고 받은 뒤 새 버전으로 다시) / "커밋 취소". 작업 트리에 변경이 있으면 되돌리지 않는다
+  - push 거부는 자동으로 합치지 않고 멈춘다: "받아와서 다시 push"(우리 커밋을 되돌리고 받은 뒤 새 버전으로 다시) / "커밋 취소". 작업 트리에 변경이 있으면 되돌리지 않는다. 되돌리기 전에 fetch 해서 우리 커밋이 이미 원격에 있으면 되돌리지 않고 끝난 저장으로 친다(확인 못 하면 되돌리지 않는다)
+  - 저장 중에는 받아오기를 거부하고, 레포에 쓰기 직전·commit 직전에 HEAD와 워커 파일·kit.yaml이 검사 때와 같은지 다시 본다(다르면 "다시 저장"). 작업 트리 변경이 `kit/kit.yaml` 수정 하나뿐이면(tiers 행 추가 등) 막지 않고 같은 커밋에 넣으며, 실패하면 kit.yaml은 사용자 편집 그대로 둔다. `GET /api/kit/remote`(git fetch)도 `X-Plenum` 헤더가 있어야 한다
 - 설치본에 반영: `claude plugin marketplace update kjh-code` → `claude plugin update <kit>@kjh-code`(명령당 2분), `installed_plugins.json` 버전이 소스와 같아야 성공. `claude`는 실행할 때마다 PATH에서 찾는다. 버전을 올리지 않으면 `plugin update`가 설치본을 안 바꾼다(실측)
 - 외부 프로그램 실행 공용화: Windows `.cmd`만 cmd.exe를 거치고, 시간 초과는 프로세스 트리째 죽인다(`taskkill /T /F`, POSIX 프로세스 그룹). VS Code는 `-g 파일:줄`로 그 줄을 연다
 

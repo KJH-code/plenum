@@ -48,3 +48,14 @@ test('kit 저장 API의 POST도 X-Plenum 헤더 없으면 403', async () => {
   }
   await srv.close();
 });
+
+test('GET /api/kit/remote 는 git fetch 를 하므로 X-Plenum 헤더 없으면 403', async () => {
+  const srv = await inProcess({ cfgDir: path.join(tmpDir(), 'cfg') });
+  const r = await fetch(`${srv.base}/api/kit/remote`);
+  expect(r.status).toBe(403);
+  // 헤더가 있으면 다음 검사로 간다 (kit 레포 경로가 없어서 400)
+  expect((await srv.call('GET', '/api/kit/remote', undefined, { 'X-Plenum': '1' })).status).toBe(400);
+  // 다른 GET 은 그대로 헤더 없이 된다
+  expect((await fetch(`${srv.base}/api/kit/save`)).status).toBe(400);
+  await srv.close();
+});

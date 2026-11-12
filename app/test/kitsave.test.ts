@@ -29,6 +29,7 @@ async function setup(opts: Parameters<typeof makeKitRepo>[0] = {}) {
 }
 
 type Srv = Awaited<ReturnType<typeof inProcess>>;
+const H = { 'X-Plenum': '1' }; // GET /api/kit/remote 도 헤더가 있어야 한다 (git fetch 부작용)
 async function save(srv: Srv, body: { worker: string; model: string; effort: string }) {
   const r = await srv.call('POST', '/api/kit/save', body);
   expect(r.status).toBe(202);
@@ -219,7 +220,7 @@ describe('원격과 비교', () => {
     const { kr, srv } = await setup();
     const base = kr.head();
     const theirs = pushFromOther(kr);
-    const st = await srv.call('GET', '/api/kit/remote');
+    const st = await srv.call('GET', '/api/kit/remote', undefined, H);
     expect(st.status).toBe(200);
     expect(st.body).toMatchObject({ branch: 'main', state: 'behind', ahead: 0, behind: 1, fetchError: null, remote: theirs });
     const blocked = await save(srv, { worker: 'impl', model: 'opus', effort: 'xhigh' });
@@ -248,7 +249,7 @@ describe('원격과 비교', () => {
     const mine = kr.commitFile(kr.repo, 'MINE.md', 'x', '로컬 커밋');
     pushFromOther(kr);
     const remote = kr.remoteHead();
-    const st = await srv.call('GET', '/api/kit/remote');
+    const st = await srv.call('GET', '/api/kit/remote', undefined, H);
     expect(st.body).toMatchObject({ state: 'diverged', ahead: 1, behind: 1 });
     const job = await save(srv, { worker: 'impl', model: 'opus', effort: 'xhigh' });
     expect(job.status).toBe('failed');
@@ -265,7 +266,7 @@ describe('원격과 비교', () => {
     const { kr, srv } = await setup();
     const remote = kr.remoteHead();
     kr.git('remote', 'set-url', 'origin', path.join(kr.root, '없는 원격.git'));
-    const st = await srv.call('GET', '/api/kit/remote');
+    const st = await srv.call('GET', '/api/kit/remote', undefined, H);
     expect(st.body.fetchError).toBeTruthy();
     expect(st.body.blockers.join(' ')).toMatch(/원격을 확인하지 못했다/);
     const head = kr.head();
@@ -390,6 +391,7 @@ describe('미리보기·열기', () => {
       authorEmail: 'jaehyuk@example.com',
       newVersion: '0.0.2',
       from: { model: 'sonnet', effort: 'medium' },
+      kitYamlEdited: false,
     });
     // 한쪽만 바뀌면 그것만
     const one = await srv.call('POST', '/api/kit/preview', { worker: 'impl', model: 'opus', effort: 'medium' });
@@ -429,7 +431,189 @@ describe('미리보기·열기', () => {
   test('kit 레포 경로가 없으면 400', async () => {
     const { srv } = await setup();
     await srv.call('PUT', '/api/settings', { kitRepoPath: null });
-    expect((await srv.call('GET', '/api/kit/remote')).status).toBe(400);
+    expect((await srv.call('GET', '/api/kit/remote', undefined, H)).status).toBe(400);
     expect((await srv.call('POST', '/api/kit/save', { worker: 'impl', model: 'opus', effort: 'xhigh' })).status).toBe(400);
+  });
+});
+
+// PATH 맨 앞에 실패하는 가짜 npm 을 두고 fn 을 돌린다 (빌드 단계 실패 장면)
+async function withFailingNpm<T>(kr: KitRepo, fn: () => Promise<T>): Promise<T> {
+  const fake = path.join(kr.root, '가짜 npm');
+  fs.mkdirSync(fake, { recursive: true });
+  fs.writeFileSync(path.join(fake, 'npm'), '#!/bin/sh\necho 일부러 실패 >&2\nexit 3\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(fake, 'npm.cmd'), '@echo 일부러 실패 1>&2\r\n@exit /b 3\r\n');
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  const saved = process.env[key];
+  process.env[key] = `${fake}${path.delimiter}${saved}`;
+  try { return await fn(); } finally { process.env[key] = saved; }
+}
+
+describe('저장 중 레포가 바뀜 (검사 뒤·쓰기 전)', () => {
+  test('다른 clone 이 워커 파일을 고쳐 push → 받아오기 API 는 409, 터미널에서 받아오면 저장은 쓰지 않고 실패, 원격 변경 그대로', async () => {
+    const { kr, srv } = await setup();
+    const LINE = '원격에서 추가한 본문 줄';
+    let theirs = '';
+    let apiPull: { status: number; body: any } | null = null;
+    startSave(kr.repo, { worker: 'impl', model: 'opus', effort: 'xhigh' }, {
+      hooks: {
+        afterCheck: async () => {
+          const o = kr.other();
+          const wf = path.join(o, 'kit', 'workers', 'impl.md');
+          theirs = kr.commitFile(o, 'kit/workers/impl.md', `${fs.readFileSync(wf, 'utf8')}\n${LINE}\n`, '원격: impl 본문 고침');
+          git(o, 'push', '-q', 'origin', 'main');
+          apiPull = await srv.call('POST', '/api/kit/pull'); // 다른 탭의 "받아오기"
+          git(kr.repo, 'pull', '-q', '--ff-only', 'origin', 'main'); // 터미널에서 받아오기
+        },
+      },
+    });
+    const job = await saveSettled();
+    expect(job.status, JSON.stringify(job.error)).toBe('failed');
+    expect(kr.git('show', 'refs/heads/main:kit/workers/impl.md')).toContain(LINE);
+    expect(apiPull!.status).toBe(409);
+    expect(apiPull!.body.error).toMatch(/저장 중이라 받아오지 않았다/);
+    expect(job.error).toMatchObject({ kind: 'git', message: expect.stringMatching(/저장하는 동안 kit 레포가 바뀌었다 — 다시 저장/) });
+    expect(job.steps.map((x) => x.state)).toEqual(['warn', 'fail', 'skip', 'skip']);
+    expect(kr.head()).toBe(theirs);
+    expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(theirs);
+    expect(kr.git('show', 'refs/heads/main:kit/workers/impl.md')).toContain(LINE);
+    const file = fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'impl.md'), 'utf8');
+    expect(file).toContain(LINE);
+    expect(file).toMatch(/^model: sonnet$/m);
+    expect(readVersions(kr.repo).kitYaml).toBe('0.0.1');
+    // 저장이 끝난 뒤에는 받아오기가 다시 된다 (받을 게 없다고 답한다)
+    const after = await srv.call('POST', '/api/kit/pull');
+    expect(after.status).toBe(200);
+    expect(after.body.ok).toBe(false);
+  });
+});
+
+describe('push 실패로 보였지만 원격에 이미 있음', () => {
+  // 원격이 받았지만 클라이언트는 실패로 본 상황: push 직전에 우리가 먼저 올리고 origin 주소를 끊는다
+  async function phantom() {
+    const s = await setup();
+    const base = s.kr.head();
+    startSave(s.kr.repo, { worker: 'impl', model: 'opus', effort: 'xhigh' }, {
+      hooks: {
+        beforePush: async () => {
+          git(s.kr.repo, 'push', '-q', 'origin', 'main');
+          git(s.kr.repo, 'remote', 'set-url', 'origin', `${s.kr.remote}-없음`);
+        },
+      },
+    });
+    const job = await saveSettled();
+    expect(job.status).toBe('push-failed');
+    expect(job.pushError!.kind).toBe('other');
+    expect(s.kr.remoteHead()).toBe(job.commit!.sha);
+    return { ...s, base, job };
+  }
+
+  for (const action of ['cancel', 'retry'] as const) {
+    test(`${action}: 원격을 확인 못 하면 409·그대로, 확인되면 되돌리지 않고 done`, async () => {
+      const { kr, srv, base, job } = await phantom();
+      const sha = job.commit!.sha;
+      const r0 = await srv.call('POST', `/api/kit/save/${action}`);
+      expect(r0.status).toBe(409);
+      expect(r0.body.error).toMatch(/원격을 확인하지 못해서 되돌리지 않았다/);
+      expect(kr.head()).toBe(sha);
+      expect(kr.porcelain()).toBe('');
+      expect(kr.remoteHead()).toBe(sha);
+      expect((await srv.call('GET', '/api/kit/save')).body.status).toBe('push-failed');
+
+      kr.git('remote', 'set-url', 'origin', kr.remote);
+      const r = await srv.call('POST', `/api/kit/save/${action}`);
+      expect(r.status).toBe(200);
+      expect(r.body.id).toBe(job.id); // 새 저장을 시작하지 않는다
+      expect(r.body.status).toBe('done');
+      expect(r.body.pushError).toBeNull();
+      expect(r.body.steps.map((x: any) => x.state)).toEqual(['warn', 'ok', 'ok', 'ok']);
+      expect(r.body.notice).toBe(`push가 실패로 보였지만 원격에 이미 올라가 있다 — ${action === 'cancel' ? '취소하지 않았다' : '다시 push하지 않았다'}`);
+      await saveSettled();
+      expect((await srv.call('GET', '/api/kit/save')).body.status).toBe('done');
+      expect(kr.head()).toBe(sha);
+      expect(kr.git('rev-parse', 'HEAD~1').trim()).toBe(base);
+      expect(kr.porcelain()).toBe('');
+      expect(kr.remoteHead()).toBe(sha);
+      expect(readVersions(kr.repo).kitYaml).toBe('0.0.2');
+    });
+  }
+});
+
+for (const mode of MODES) describe(`작업 트리 변경이 kit/kit.yaml 하나뿐${mode.name}`, () => {
+  // tiers 에 Sonnet high 행을 더한다 (줄바꿈은 파일 것 그대로)
+  const addRow = (kr: KitRepo): string => {
+    const y = path.join(kr.repo, 'kit', 'kit.yaml');
+    const t = fs.readFileSync(y, 'utf8');
+    const nl = t.includes('\r\n') ? '\r\n' : '\n';
+    const edited = t.replace('worker_order:', ['  - tier: Sonnet high', '    label: "Sonnet high"', '    role: "구현"', 'worker_order:'].join(nl));
+    expect(edited).not.toBe(t);
+    fs.writeFileSync(y, edited);
+    return edited;
+  };
+  const ROW_LINES = [{ sign: '+', text: '  - tier: Sonnet high' }, { sign: '+', text: '    label: "Sonnet high"' }, { sign: '+', text: '    role: "구현"' }];
+  const kitYaml = (kr: KitRepo) => fs.readFileSync(path.join(kr.repo, 'kit', 'kit.yaml'), 'utf8');
+
+  test('tiers ERROR → kit.yaml 에 행 추가(커밋 안 함) → 미리보기에 그 줄 → 저장 done, 커밋에 행+버전', async () => {
+    const { kr, srv } = await setup({ autocrlf: mode.crlf });
+    const body = { worker: 'impl', model: 'sonnet', effort: 'high' };
+    const first = await save(srv, body);
+    expect(first.error).toMatchObject({ kind: 'tier', tier: 'Sonnet high' });
+    expect(kr.porcelain()).toBe('');
+
+    const base = kr.head();
+    addRow(kr);
+    expect(kr.porcelain()).toBe(' M kit/kit.yaml\n');
+    const st = await srv.call('GET', '/api/kit/remote', undefined, H);
+    expect(st.body).toMatchObject({ state: 'same', kitYamlDirty: true, blockers: [] });
+
+    const pv = await srv.call('POST', '/api/kit/preview', body);
+    expect(pv.status).toBe(200);
+    expect(pv.body.kitYamlEdited).toBe(true);
+    expect(pv.body.files[1]).toEqual({ path: 'kit/kit.yaml', lines: [{ sign: '-', text: 'version: "0.0.1"' }, { sign: '+', text: 'version: "0.0.2"' }, ...ROW_LINES] });
+
+    const job = await save(srv, body);
+    expect(job.status, JSON.stringify(job.error)).toBe('done');
+    expect(kr.git('rev-parse', 'HEAD~1').trim()).toBe(base);
+    expect(kr.remoteHead()).toBe(kr.head());
+    expect(kr.porcelain()).toBe('');
+    expect(diffLines(kr, 'kit/kit.yaml')).toEqual(['-version: "0.0.1"', '+version: "0.0.2"', '+  - tier: Sonnet high', '+    label: "Sonnet high"', '+    role: "구현"']);
+    expect(diffLines(kr, 'kit/workers/impl.md')).toEqual(['-effort: medium', '+effort: high']);
+    expect(readVersions(kr.repo)).toEqual({ kitYaml: '0.0.2', packageJson: '0.0.2', lockTop: '0.0.2', lockRoot: '0.0.2' });
+    if (mode.crlf) expectCrlfCheckout(kr);
+  });
+
+  test('같은 상태에서 빌드 실패 → kit.yaml 은 사용자 편집 그대로, 나머지는 되돌림', async () => {
+    const { kr, srv } = await setup({ autocrlf: mode.crlf });
+    const head = kr.head();
+    const remote = kr.remoteHead();
+    const edited = addRow(kr);
+    const job = await withFailingNpm(kr, () => save(srv, { worker: 'impl', model: 'sonnet', effort: 'high' }));
+    expect(job.status).toBe('failed');
+    expect(job.error.message).toMatch(/npm version patch 실패/);
+    expect(job.error.message).toMatch(/레포는 저장 전으로 되돌렸다/);
+    expect(kr.head()).toBe(head);
+    expect(kr.remoteHead()).toBe(remote);
+    expect(kitYaml(kr)).toBe(edited);
+    expect(kr.porcelain()).toBe(' M kit/kit.yaml\n');
+    expect(fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'impl.md'), 'utf8')).toMatch(/^effort: medium\r?$/m);
+    expect(readVersions(kr.repo)).toEqual({ kitYaml: '0.0.1', packageJson: '0.0.1', lockTop: '0.0.1', lockRoot: '0.0.1' });
+  });
+
+  test('kit.yaml + 다른 파일이 바뀌어 있으면 막는다', async () => {
+    const { kr, srv } = await setup({ autocrlf: mode.crlf });
+    const edited = addRow(kr);
+    fs.writeFileSync(path.join(kr.repo, '메모.txt'), 'x');
+    const head = kr.head();
+    const porc = kr.porcelain();
+    const remote = kr.remoteHead();
+    const st = await srv.call('GET', '/api/kit/remote', undefined, H);
+    expect(st.body.kitYamlDirty).toBe(false);
+    const job = await save(srv, { worker: 'impl', model: 'sonnet', effort: 'high' });
+    expect(job.status).toBe('failed');
+    expect(job.error).toMatchObject({ kind: 'blocked', message: expect.stringMatching(/커밋 안 된 변경이 있다 \(2개/) });
+    expect(kr.head()).toBe(head);
+    expect(kr.porcelain()).toBe(porc);
+    expect(kr.remoteHead()).toBe(remote);
+    expect(kitYaml(kr)).toBe(edited);
   });
 });

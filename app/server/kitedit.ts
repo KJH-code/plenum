@@ -212,7 +212,8 @@ export function planSave(repo: string, worker: unknown, model: unknown, effort: 
 
 export interface DiffLine { sign: '-' | '+'; text: string }
 export interface PreviewFile { path: string; lines: DiffLine[] }
-export interface Preview { files: PreviewFile[]; commitMessage: string; authorEmail: string | null; newVersion: string; from: WorkerFields }
+// kitYamlEdited: kit/kit.yaml 에 커밋 안 한 사용자 변경이 있어 같은 커밋에 들어간다
+export interface Preview { files: PreviewFile[]; commitMessage: string; authorEmail: string | null; newVersion: string; from: WorkerFields; kitYamlEdited: boolean }
 
 // 바뀌는 줄만 (줄 수가 같은 편집이라 같은 번호끼리 비교)
 function changedLines(a: string, b: string): DiffLine[] {
@@ -224,6 +225,30 @@ function changedLines(a: string, b: string): DiffLine[] {
     if (la[i] !== undefined) out.push({ sign: '-', text: la[i].replace(/\r$/, '') });
     if (lb[i] !== undefined) out.push({ sign: '+', text: lb[i].replace(/\r$/, '') });
   }
+  return out;
+}
+
+// 줄 수가 다를 수 있는 diff (kit.yaml 에 사용자가 행을 더한 경우). 줄 끝 \r 은 비교에서 뗀다(autocrlf 작업 트리 vs LF 커밋).
+// 파일이 작아서 LCS 표로 충분하다. 바뀐 덩어리마다 - 줄 다음 + 줄
+export function lineDiff(a: string, b: string): DiffLine[] {
+  const la = a.split('\n').map((l) => l.replace(/\r$/, ''));
+  const lb = b.split('\n').map((l) => l.replace(/\r$/, ''));
+  const n = la.length;
+  const m = lb.length;
+  const t: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) t[i][j] = la[i] === lb[j] ? t[i + 1][j + 1] + 1 : Math.max(t[i + 1][j], t[i][j + 1]);
+  const out: DiffLine[] = [];
+  let del: DiffLine[] = [];
+  let add: DiffLine[] = [];
+  const flush = () => { out.push(...del, ...add); del = []; add = []; };
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && la[i] === lb[j]) { flush(); i++; j++; }
+    else if (j < m && (i >= n || t[i][j + 1] >= t[i + 1][j])) add.push({ sign: '+', text: lb[j++] });
+    else del.push({ sign: '-', text: la[i++] });
+  }
+  flush();
   return out;
 }
 
@@ -245,11 +270,15 @@ function jsonVersionLines(text: string, from: string, to: string, lock: boolean)
 export async function previewSave(repo: string, worker: unknown, model: unknown, effort: unknown): Promise<Preview> {
   const plan = planSave(repo, worker, model, effort);
   const read = (f: string) => { try { return fs.readFileSync(path.join(repo, f), 'utf8'); } catch { return ''; } };
-  const email = await run('git', ['config', 'user.email'], { cwd: repo, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const email = await run('git', ['config', 'user.email'], { cwd: repo, env });
+  // kit.yaml 은 커밋된 내용(HEAD)과 비교한다 — 커밋 안 한 사용자 변경(tiers 행 등)도 같은 커밋에 들어가므로 함께 보여 준다
+  const headYaml = await run('git', ['show', 'HEAD:kit/kit.yaml'], { cwd: repo, env });
+  const kitYamlEdited = headYaml.code === 0 && toLf(headYaml.stdout) !== toLf(plan.oldKitYaml);
   return {
     files: [
       { path: plan.workerFile, lines: changedLines(plan.oldWorkerText, plan.newWorkerText) },
-      { path: 'kit/kit.yaml', lines: changedLines(plan.oldKitYaml, plan.newKitYaml) },
+      { path: 'kit/kit.yaml', lines: kitYamlEdited ? lineDiff(headYaml.stdout, plan.newKitYaml) : changedLines(plan.oldKitYaml, plan.newKitYaml) },
       { path: 'package.json', lines: jsonVersionLines(read('package.json'), plan.version, plan.newVersion, false) },
       { path: 'package-lock.json', lines: jsonVersionLines(read('package-lock.json'), plan.version, plan.newVersion, true) },
     ],
@@ -257,6 +286,7 @@ export async function previewSave(repo: string, worker: unknown, model: unknown,
     authorEmail: email.code === 0 && email.stdout.trim() ? email.stdout.trim() : null,
     newVersion: plan.newVersion,
     from: plan.from,
+    kitYamlEdited,
   };
 }
 

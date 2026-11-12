@@ -1,6 +1,6 @@
 // 워커 파일·kit.yaml 편집: 바뀌는 줄의 값만, 나머지는 바이트 그대로
 import { describe, expect, test } from 'vitest';
-import { bumpPatch, commitMessage, getKitYamlVersion, getWorkerFields, setKitYamlVersion, setWorkerFields, versionProblem } from '../server/kitedit.ts';
+import { bumpPatch, commitMessage, getKitYamlVersion, getWorkerFields, lineDiff, setKitYamlVersion, setWorkerFields, versionProblem } from '../server/kitedit.ts';
 
 const WORKER = [
   '---',
@@ -106,5 +106,25 @@ describe('버전', () => {
     expect(commitMessage('impl', { model: 'sonnet', effort: 'medium' }, { model: 'opus', effort: 'xhigh' }, '0.0.2')).toBe('impl: model sonnet → opus, effort medium → xhigh (0.0.2)');
     expect(commitMessage('impl', { model: 'sonnet', effort: 'medium' }, { model: 'sonnet', effort: 'high' }, '0.0.2')).toBe('impl: effort medium → high (0.0.2)');
     expect(commitMessage('impl', { model: 'sonnet', effort: 'medium' }, { model: 'opus', effort: 'medium' }, '0.0.2')).toBe('impl: model sonnet → opus (0.0.2)');
+  });
+});
+
+describe('lineDiff (kit.yaml 미리보기: 사용자 편집 + 버전 줄)', () => {
+  test('줄이 늘어난 편집도 바뀐 줄만, - 다음 +', () => {
+    const head = 'name: x\nversion: "0.0.1"\ntiers:\n  - tier: A\nworker_order: [a]\n';
+    const next = 'name: x\nversion: "0.0.2"\ntiers:\n  - tier: A\n  - tier: B\nworker_order: [a]\n';
+    expect(lineDiff(head, next)).toEqual([
+      { sign: '-', text: 'version: "0.0.1"' }, { sign: '+', text: 'version: "0.0.2"' },
+      { sign: '+', text: '  - tier: B' },
+    ]);
+  });
+  test('CRLF 작업 트리 vs LF 커밋은 줄바꿈 차이를 무시', () => {
+    expect(lineDiff('a\nb\n', 'a\r\nb\r\n')).toEqual([]);
+    expect(lineDiff('a\nb\n', 'a\r\nc\r\n')).toEqual([{ sign: '-', text: 'b' }, { sign: '+', text: 'c' }]);
+  });
+  test('빈 입력', () => {
+    expect(lineDiff('', '')).toEqual([]);
+    expect(lineDiff('', 'a')).toEqual([{ sign: '-', text: '' }, { sign: '+', text: 'a' }]);
+    expect(lineDiff('a\nb', 'b')).toEqual([{ sign: '-', text: 'a' }]);
   });
 });

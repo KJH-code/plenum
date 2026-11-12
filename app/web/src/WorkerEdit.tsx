@@ -36,7 +36,10 @@ export function Workers({ kitPath, versions, refreshVersions, drafts, setDrafts 
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [job, setJob] = useState<SaveJob | null>(null);
   const [acting, setActing] = useState(false); // retry·cancel 요청 중
+  const [saveKnown, setSaveKnown] = useState(false); // 서버 저장 상태를 한 번 읽었다 (그 전엔 초안을 지우지 않는다)
   const stopPoll = useRef<(() => void) | null>(null);
+  const jobRef = useRef<SaveJob | null>(null);
+  jobRef.current = job;
   const editorRef = useRef<HTMLElement | null>(null);
 
   const loadKit = useCallback(() => api.workers().then(setKit).catch((e) => setKit({ ok: false, repo: kitPath, message: e.message })), [kitPath]);
@@ -46,12 +49,13 @@ export function Workers({ kitPath, versions, refreshVersions, drafts, setDrafts 
     api.remote().then(setRemote).catch((e) => setRemoteErr(e.message));
   }, []);
 
+  // 저장이 끝나면(또는 retry·cancel 뒤) 목록·원격 상태를 다시 읽는다. push 실패 중에는 목록을 그대로 둔다
   const ended = useCallback((j: SaveJob) => {
     if (j.status === 'done') {
       setDrafts((d) => { const n = { ...d }; delete n[j.worker]; return n; });
-      loadKit();
       refreshVersions();
     }
+    if (j.status !== 'push-failed') loadKit();
     loadRemote();
   }, [loadKit, loadRemote, refreshVersions, setDrafts]);
 
@@ -77,22 +81,27 @@ export function Workers({ kitPath, versions, refreshVersions, drafts, setDrafts 
       if (!alive) return;
       if (s.status === 'running') follow(s);
       else if (s.status === 'push-failed') setJob(s);
-    }).catch(() => { /* 저장 상태를 못 읽으면 패널 없이 */ });
+      setSaveKnown(true);
+    }).catch(() => { if (alive) setSaveKnown(true); /* 저장 상태를 못 읽으면 패널 없이 */ });
     return () => { alive = false; stopPoll.current?.(); };
   }, [follow]);
-  // 목록을 다시 읽은 뒤 원래 값과 같아진 초안은 지운다
+  // 목록을 다시 읽은 뒤 원래 값과 같아진 초안은 지운다.
+  // 단, push가 실패한 저장(또는 도는 중인 저장)의 워커는 남긴다 — 파일은 저장하려던 값이지만 아직 원격에 없고, 커밋 취소하면 다시 수정 중이어야 한다
   useEffect(() => {
-    if (!kit || !kit.ok) return;
+    if (!kit || !kit.ok || !saveKnown) return;
+    const j = jobRef.current;
+    const keep = j && (j.status === 'push-failed' || j.status === 'running') ? j.worker : null;
     setDrafts((d) => {
       let changed = false;
       const n = { ...d };
       for (const w of kit.workers) {
+        if (w.name === keep) continue;
         const x = n[w.name];
         if (x && x.model === w.model && x.effort === w.effort) { delete n[w.name]; changed = true; }
       }
       return changed ? n : d;
     });
-  }, [kit, setDrafts]);
+  }, [kit, saveKnown, setDrafts]);
 
   if (!kit) return <p className="hint">kit 읽는 중…</p>;
   if (!kit.ok) {
@@ -155,22 +164,33 @@ export function Workers({ kitPath, versions, refreshVersions, drafts, setDrafts 
     setJob(null); // 이전 저장의 결과 패널을 새 저장이 시작되기 전에 치운다
     try { follow(await api.startSave(worker, model, effort)); } catch (e: any) { setActionErr(e.message); }
   };
+  // retry·cancel 뒤 그 워커의 초안은 저장하려던 값 (끝까지 저장되면 ended 가 지운다)
+  const keepDraft = (j: SaveJob) => setDrafts((d) => ({ ...d, [j.worker]: { model: j.model, effort: j.effort } }));
   const retry = async () => {
     setActing(true);
     setActionErr(null);
-    try { follow(await api.retrySave()); } catch (e: any) { setActionErr(e.message); } finally { setActing(false); }
+    try {
+      const j = await api.retrySave();
+      if (j.status !== 'done') keepDraft(j);
+      follow(j);
+    } catch (e: any) { setActionErr(e.message); } finally { setActing(false); }
   };
   const cancel = async () => {
     setActing(true);
     setActionErr(null);
-    try { setJob(await api.cancelSave()); loadRemote(); } catch (e: any) { setActionErr(e.message); } finally { setActing(false); }
+    try {
+      const j = await api.cancelSave();
+      if (j.status === 'cancelled') keepDraft(j);
+      setJob(j);
+      ended(j);
+    } catch (e: any) { setActionErr(e.message); } finally { setActing(false); }
   };
 
   const remoteOk = !!remote && remote.blockers.length === 0;
   const onlyBehind = !!remote && remote.state === 'behind' && remote.blockers.length === 1;
   const remoteLine = remoteErr ? <span className="error">원격을 확인하지 못했다: {remoteErr}</span>
     : !remote ? <span className="hint">원격 main 확인 중…</span>
-    : remoteOk ? <span className="muted">원격 main과 같음 (<span className="mono">{remote.head.slice(0, 7)}</span>) · 저장 직전에 다시 확인한다</span>
+    : remoteOk ? <span className="muted">원격 main과 같음 (<span className="mono">{remote.head.slice(0, 7)}</span>) · 저장 직전에 다시 확인한다{remote.kitYamlDirty && <> · <span className="warn-text">kit/kit.yaml에 커밋 안 한 변경이 있다 — kit.yaml 변경을 같은 커밋에 넣는다</span></>}</span>
     : onlyBehind ? <span className="warn-text">원격 main이 {remote.behind}커밋 앞섰다 · 받아온 뒤에 저장할 수 있다</span>
     : <span className="warn-text">{remote.blockers.join(' / ')}</span>;
 
@@ -233,7 +253,9 @@ export function Workers({ kitPath, versions, refreshVersions, drafts, setDrafts 
           <span className="spacer" />
           <button type="button" className="btn ghost" disabled={!cur || !isDirty(cur) || locked}
             onClick={() => cur && setDrafts((d) => { const n = { ...d }; delete n[cur.name]; return n; })}>되돌리기</button>
+          {remoteOk && remote?.kitYamlDirty && <span className="hint" id="kit-yaml-note" data-testid="kit-yaml-note">kit.yaml 변경을 같은 커밋에 넣는다</span>}
           <button type="button" className="btn primary" disabled={!cur || !isDirty(cur) || locked || !remoteOk || previewing}
+            aria-describedby={remoteOk && remote?.kitYamlDirty ? 'kit-yaml-note' : undefined}
             onClick={() => cur && openPreview(cur)}>{previewing ? '확인 중…' : '저장…'}</button>
         </div>
         {pullMsg && <p className={pullMsg.ok ? 'ok-text' : 'error'} role="status">{pullMsg.text}</p>}
@@ -302,7 +324,7 @@ function Editor({ w, d, kit, locked, setField }: {
         <div className="notice" role="alert" data-testid="fable-warn">
           <div>
             Fable은 훅이 ORCHESTRATE_FABLE=1일 때만 허용한다. 극한 모드가 아닌 모드에서 이 워커를 부르면 막힌다.
-            {!w.name.endsWith('-fable') && ' 막혔을 때 Opus 짝 안내도 없다(훅 OPUS_PAIR는 3단계에서 워커 칸으로 옮긴다).'}
+            {!w.name.endsWith('-fable') && ' 막혔을 때 훅은 Opus 짝으로 su-prover를 안내한다 — 이 워커의 짝이 아니다(OPUS_PAIR는 3단계에서 워커 칸으로 옮긴다).'}
           </div>
         </div>
       )}
@@ -336,6 +358,7 @@ function SaveDialog({ preview, onCancel, onConfirm }: {
               </Fragment>
             ))}
           </div>
+          {p.kitYamlEdited && <span className="muted" data-testid="kit-yaml-edited">kit/kit.yaml의 커밋 안 한 변경(위 줄)도 같은 커밋에 들어간다.</span>}
           <span className="muted">버전은 저장마다 patch가 하나씩 오른다 ({preview.version} → {p.newVersion}).</span>
           <div className="commit-box">
             <span className="hint">커밋 메시지</span>
@@ -438,6 +461,7 @@ function SaveResult({ job, acting, versions, plugin, onOpen, onRetry, onCancel, 
       {job.status === 'done' && (
         <div className="result ok" data-testid="save-done">
           <div className="ok-text" role="status">저장 끝 · 커밋 <span className="mono">{job.commit?.short ?? '[커밋 모름]'}</span> push됨.</div>
+          {job.notice && <div className="muted" data-testid="save-notice">{job.notice}</div>}
           <div className="muted">{installedLine}</div>
           <InstallPanel plugin={plugin} onFinished={onInstalled} />
         </div>

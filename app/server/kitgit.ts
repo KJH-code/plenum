@@ -12,6 +12,7 @@ const lastLine = (r: RunResult) => (r.stderr.trim() || r.stdout.trim()).split(/\
 export interface RemoteStatus {
   branch: string;
   dirty: string[];
+  kitYamlDirty: boolean; // 작업 트리 변경이 kit/kit.yaml 수정 하나뿐 — 막지 않고 저장 커밋에 넣는다
   ahead: number;
   behind: number;
   state: 'same' | 'ahead' | 'behind' | 'diverged' | 'no-remote';
@@ -27,6 +28,9 @@ export async function porcelain(repo: string): Promise<string[]> {
   return r.stdout.split('\n').map((l) => l.replace(/\r$/, '')).filter(Boolean);
 }
 
+// porcelain 이 kit/kit.yaml 수정 한 줄뿐인가 (untracked·삭제·다른 파일이 하나라도 있으면 아니다)
+export const onlyKitYamlModified = (dirty: string[]) => dirty.length === 1 && /^(?: M|M |MM) kit\/kit\.yaml$/.test(dirty[0]);
+
 export async function headSha(repo: string): Promise<string> {
   const r = await kitGit(repo, ['rev-parse', 'HEAD']);
   if (r.code !== 0) throw new Error(`HEAD를 읽지 못했다: ${lastLine(r)}`);
@@ -40,14 +44,15 @@ export async function remoteStatus(repo: string, opts: { fetch?: boolean } = {})
   const head = await headSha(repo);
   const dirty = await porcelain(repo);
   const blockers: string[] = [];
+  const kitYamlDirty = onlyKitYamlModified(dirty);
   if (branch !== 'main') blockers.push(branch === 'HEAD' ? '브랜치가 아닌 커밋에 있다(detached HEAD) — main으로 바꾼다' : `현재 브랜치가 main이 아니다 (${branch}) — main으로 바꾼다`);
-  if (dirty.length) blockers.push(`작업 트리에 커밋 안 된 변경이 있다 (${dirty.length}개: ${dirty.slice(0, 3).map((l) => l.slice(3)).join(', ')}${dirty.length > 3 ? ' …' : ''}) — 커밋하거나 되돌린다`);
+  if (dirty.length && !kitYamlDirty) blockers.push(`작업 트리에 커밋 안 된 변경이 있다 (${dirty.length}개: ${dirty.slice(0, 3).map((l) => l.slice(3)).join(', ')}${dirty.length > 3 ? ' …' : ''}) — 커밋하거나 되돌린다${dirty.some((l) => l.slice(3) === 'kit/kit.yaml') ? ' (kit/kit.yaml 하나만 바뀐 경우는 같은 커밋에 넣는다)' : ''}`);
 
   let fetchError: string | null = null;
   const url = await kitGit(repo, ['remote', 'get-url', 'origin']);
   if (url.code !== 0) {
     blockers.push('원격 origin이 없다');
-    return { branch, dirty, ahead: 0, behind: 0, state: 'no-remote', head, remote: null, fetchError, blockers };
+    return { branch, dirty, kitYamlDirty, ahead: 0, behind: 0, state: 'no-remote', head, remote: null, fetchError, blockers };
   }
   if (doFetch) {
     const f = await kitGit(repo, ['fetch', 'origin'], NET_MS);
@@ -59,7 +64,7 @@ export async function remoteStatus(repo: string, opts: { fetch?: boolean } = {})
   const rm = await kitGit(repo, ['rev-parse', '--verify', '-q', 'refs/remotes/origin/main']);
   if (rm.code !== 0) {
     if (!fetchError) blockers.push('원격에 main 브랜치(origin/main)가 없다');
-    return { branch, dirty, ahead: 0, behind: 0, state: 'no-remote', head, remote: null, fetchError, blockers };
+    return { branch, dirty, kitYamlDirty, ahead: 0, behind: 0, state: 'no-remote', head, remote: null, fetchError, blockers };
   }
   const remote = rm.stdout.trim();
   const c = await kitGit(repo, ['rev-list', '--left-right', '--count', 'HEAD...refs/remotes/origin/main']);
@@ -69,7 +74,7 @@ export async function remoteStatus(repo: string, opts: { fetch?: boolean } = {})
   if (state === 'diverged') blockers.push(`로컬과 원격이 갈라졌다 (로컬에만 커밋 ${ahead}개, 원격에만 ${behind}개) — 직접 합친 뒤 다시 저장한다`);
   else if (state === 'ahead') blockers.push(`push 안 된 커밋이 ${ahead}개 있다 — 먼저 push 하거나 정리한다`);
   else if (state === 'behind') blockers.push(`원격보다 커밋 ${behind}개 뒤처졌다 — 받아오기 하면 된다`);
-  return { branch, dirty, ahead, behind, state, head, remote, fetchError, blockers };
+  return { branch, dirty, kitYamlDirty, ahead, behind, state, head, remote, fetchError, blockers };
 }
 
 export interface GitResult { ok: boolean; message: string }
@@ -87,6 +92,18 @@ export async function pullFastForward(repo: string): Promise<GitResult> {
   const r = await kitGit(repo, ['pull', '--ff-only', 'origin', 'main'], NET_MS);
   if (r.code !== 0) return { ok: false, message: `git pull --ff-only 실패: ${lastLine(r)}` };
   return { ok: true, message: `커밋 ${st.behind}개를 받아왔다` };
+}
+
+// push 가 실패로 보였어도 원격이 이미 받았을 수 있다: fetch 한 뒤 sha 가 origin/main 의 조상(같음 포함)인지
+export async function commitOnRemote(repo: string, sha: string): Promise<{ ok: true; onRemote: boolean } | { ok: false; message: string }> {
+  const f = await kitGit(repo, ['fetch', 'origin'], NET_MS);
+  if (f.code !== 0) return { ok: false, message: `원격을 확인하지 못해서 되돌리지 않았다 (커밋이 이미 원격에 있을 수 있다): ${lastLine(f)}` };
+  const rm = await kitGit(repo, ['rev-parse', '--verify', '-q', 'refs/remotes/origin/main']);
+  if (rm.code !== 0) return { ok: true, onRemote: false };
+  const a = await kitGit(repo, ['merge-base', '--is-ancestor', sha, 'refs/remotes/origin/main']);
+  if (a.code === 0) return { ok: true, onRemote: true };
+  if (a.code === 1) return { ok: true, onRemote: false };
+  return { ok: false, message: `커밋이 원격에 있는지 확인하지 못해서 되돌리지 않았다: ${lastLine(a)}` };
 }
 
 // HEAD 가 우리 커밋(sha)이고 그 부모가 저장 전 HEAD(baseSha)일 때만 저장 전으로 되돌린다

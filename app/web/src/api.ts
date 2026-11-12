@@ -1,4 +1,4 @@
-// 서버 API. 바꾸는 요청에는 X-Plenum 헤더를 붙인다 (서버가 없으면 거부).
+// 서버 API. 모든 요청에 X-Plenum 헤더를 붙인다 (바꾸는 요청과 부작용 있는 GET /api/kit/remote 는 서버가 없으면 거부).
 export interface Detection {
   exists: boolean;
   git: 'none' | 'empty' | 'ok';
@@ -28,6 +28,7 @@ export interface Versions { plugin: string | null; source: Side | null; sourcePr
 export interface RemoteStatus {
   branch: string;
   dirty: string[];
+  kitYamlDirty: boolean;
   ahead: number;
   behind: number;
   state: 'same' | 'ahead' | 'behind' | 'diverged' | 'no-remote';
@@ -39,7 +40,7 @@ export interface RemoteStatus {
 export interface PullResult { ok: boolean; message: string; remote: RemoteStatus }
 export interface DiffLine { sign: '-' | '+'; text: string }
 export interface PreviewFile { path: string; lines: DiffLine[] }
-export interface Preview { files: PreviewFile[]; commitMessage: string; authorEmail: string | null; newVersion: string; from: { model: string; effort: string } }
+export interface Preview { files: PreviewFile[]; commitMessage: string; authorEmail: string | null; newVersion: string; from: { model: string; effort: string }; kitYamlEdited: boolean }
 export type StepKey = 'check' | 'build' | 'commit' | 'push';
 export type StepState = 'wait' | 'run' | 'ok' | 'warn' | 'fail' | 'skip';
 export interface SaveError { kind: 'blocked' | 'compiler' | 'version' | 'tier' | 'build' | 'git' | 'other'; message: string; tier?: string; file?: string }
@@ -52,6 +53,7 @@ export interface SaveJob {
   pushError: { kind: 'rejected' | 'other'; message: string } | null;
   baseSha: string | null; commit: { sha: string; short: string } | null;
   newVersion: string | null; commitMessage: string | null;
+  notice: string | null;
 }
 export interface InstallStepResult { label: string; command: string; code: number | null; output: string; timedOut: boolean; error?: string }
 export interface InstallState {
@@ -66,7 +68,7 @@ export interface InstallState {
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: method === 'GET' ? {} : { 'Content-Type': 'application/json', 'X-Plenum': '1' },
+    headers: method === 'GET' ? { 'X-Plenum': '1' } : { 'Content-Type': 'application/json', 'X-Plenum': '1' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({ error: `응답을 읽지 못했다 (${res.status})` }));

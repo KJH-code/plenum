@@ -123,11 +123,11 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   await model.selectOption('fable');
   const fw = await page.getByTestId('fable-warn').innerText();
   assert.match(fw, /Fable은 훅이 ORCHESTRATE_FABLE=1일 때만 허용한다\. 극한 모드가 아닌 모드에서 이 워커를 부르면 막힌다\./);
-  assert.match(fw, /막혔을 때 Opus 짝 안내도 없다\(훅 OPUS_PAIR는 3단계에서 워커 칸으로 옮긴다\)/);
+  assert.match(fw, /막혔을 때 훅은 Opus 짝으로 su-prover를 안내한다 — 이 워커의 짝이 아니다\(OPUS_PAIR는 3단계에서 워커 칸으로 옮긴다\)\./);
   await model.selectOption('sonnet');
   assert.equal(await row('impl').getByTestId('dirty-mark').count(), 0, '원래 값으로 돌리면 수정 중이 꺼져야 한다');
   await model.selectOption('opus');
-  pass('AI 바꾸기: 칸 강조·원래 값·● 수정 중·쓰는 모드 안내·Fable 경고(짝 안내 없음)');
+  pass('AI 바꾸기: 칸 강조·원래 값·● 수정 중·쓰는 모드 안내·Fable 경고(훅이 안내하는 짝은 su-prover)');
 
   // 7. 초안이 있으면 beforeunload 가 막는다 / 없으면 안 막는다
   const before = () => page.evaluate(() => {
@@ -232,10 +232,22 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   assert.match(pt, new RegExp(`push 실패 · 원격 main이 그사이 앞섰다\\. 커밋 ${pushShort}는 로컬에만 있다\\.`));
   assert.equal((await steps()).push, 'fail');
   assert.equal(await page.getByTestId('step-push').locator('.hint').innerText(), '원격이 앞섬');
+  // push 실패인 채로 설정 › kit 에 갔다가 워커로 돌아온다 (목록을 다시 읽어도 그 워커 초안은 남아야 한다)
+  await page.goto(`${base}/#/settings/kit`);
+  await page.getByLabel('kit 레포 경로').waitFor(T);
+  await page.goto(`${base}/#/settings/workers`);
+  await page.getByTestId('push-failed').waitFor(T);
   await page.getByRole('button', { name: '커밋 취소' }).click();
   await page.getByTestId('save-cancelled').waitFor(T);
   assert.equal(kr.head(), base2, '커밋 취소 뒤 HEAD 가 저장 전이 아니다');
-  await row('rev').getByTestId('dirty-mark').waitFor();
+  assert.equal(kr.porcelain(), '');
+  assert.match(fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'rev.md'), 'utf8'), /^effort: xhigh\r?$/m, '커밋 취소 뒤 파일이 원래 값이 아니다');
+  // 목록을 다시 읽은 뒤에도(원래 값 xhigh) 행은 수정 중, 드롭다운은 저장하려던 값
+  await row('rev').filter({ hasText: 'medium' }).getByTestId('dirty-mark').waitFor(T);
+  await row('rev').click();
+  assert.equal(await effort.inputValue(), 'medium', '커밋 취소 뒤 드롭다운이 저장하려던 값이 아니다');
+  assert.match(await editor.innerText(), /원래: xhigh/);
+  assert.equal((await before()).prevented, true, '커밋 취소 뒤 초안이 있는데 beforeunload 가 안 막았다');
   await waitRemoteSame();
   await confirmSave();
   assert.equal(await run.getAttribute('data-status'), 'push-failed');
@@ -245,7 +257,7 @@ async function saveFlows(page: Page, sk: ReturnType<typeof prepareSaveKit>) {
   await settledAfter(prevRetry);
   assert.equal(await run.getAttribute('data-status'), 'done', await run.innerText());
   assert.equal(kr.remoteHead(), kr.head());
-  pass(`push 거부 → push 실패 패널(${pushShort}) → 커밋 취소(초안 남음) → 받아와서 다시 push → 저장 끝`);
+  pass(`push 거부 → push 실패 패널(${pushShort}) → 설정 › kit 갔다 옴 → 커밋 취소(수정 중·드롭다운 medium·파일 xhigh·beforeunload) → 받아와서 다시 push → 저장 끝`);
   await page.getByRole('button', { name: '닫기' }).click();
 
   // 6. 원격 뒤처짐 → 화면 다시 열면 뒤처짐·저장 비활성 → 받아오기 → 저장 가능

@@ -1,6 +1,7 @@
 // 로컬 HTTP 서버. 127.0.0.1에만 묶는다.
 // 다른 사이트가 브라우저를 통해 이 서버를 부르지 못하게: Host가 127.0.0.1/localhost가 아니면 거부(DNS rebinding),
 // 바꾸는 요청(POST·PUT·DELETE)은 X-Plenum 헤더가 있어야 한다(사용자 정의 헤더는 CORS preflight가 필요한데 응답하지 않는다).
+// GET 이어도 부작용이 있는 것(/api/kit/remote 는 git fetch)은 같은 헤더가 있어야 한다.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -11,7 +12,7 @@ import { readKit } from './kit.ts';
 import { getInstall, startInstall } from './install.ts';
 import { previewSave } from './kitedit.ts';
 import { pullFastForward, remoteStatus } from './kitgit.ts';
-import { cancelSave, getSave, retrySave, startSave } from './kitsave.ts';
+import { cancelSave, getSave, isSaving, retrySave, startSave } from './kitsave.ts';
 import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
@@ -67,7 +68,8 @@ export function createHandler(opts: ServerOptions = {}) {
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, parts: string[]) {
     const method = req.method || 'GET';
-    if (method !== 'GET' && req.headers['x-plenum'] !== '1') throw new UserError(403, 'X-Plenum 헤더가 없는 요청');
+    const needsHeader = method !== 'GET' || (parts[0] === 'kit' && parts[1] === 'remote');
+    if (needsHeader && req.headers['x-plenum'] !== '1') throw new UserError(403, 'X-Plenum 헤더가 없는 요청');
     const cfg = loadConfig(cfgDir);
     const [a, b, c] = parts;
 
@@ -95,6 +97,8 @@ export function createHandler(opts: ServerOptions = {}) {
       if (!repo) throw new UserError(400, 'kit 레포 경로가 지정되지 않았다 — 설정 › 일반에서 지정');
       if (b === 'remote' && !c && method === 'GET') return send(res, 200, await remoteStatus(repo));
       if (b === 'pull' && !c && method === 'POST') {
+        // 저장이 검사한 레포를 그사이 바꾸지 않게
+        if (isSaving()) throw new UserError(409, '저장 중이라 받아오지 않았다 — 저장이 끝난 뒤 다시');
         const r = await pullFastForward(repo);
         return send(res, 200, { ...r, remote: await remoteStatus(repo, { fetch: false }) });
       }
