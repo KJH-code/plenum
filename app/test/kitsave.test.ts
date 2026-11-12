@@ -126,6 +126,7 @@ describe('빌드 단계 실패 → 손댄 경로만 롤백', () => {
   test('npm version 실패 → 워커 파일·kit.yaml 되돌림, HEAD·porcelain 그대로', async () => {
     const { kr, srv } = await setup();
     const head = kr.head();
+    const remote = kr.remoteHead();
     // PATH 맨 앞에 실패하는 가짜 npm
     const fake = path.join(kr.root, '가짜 npm');
     fs.mkdirSync(fake);
@@ -144,6 +145,7 @@ describe('빌드 단계 실패 → 손댄 경로만 롤백', () => {
     } finally { process.env[key] = saved; }
     expect(kr.head()).toBe(head);
     expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(remote);
     expect(readVersions(kr.repo).kitYaml).toBe('0.0.1');
     expect(fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'impl.md'), 'utf8')).toMatch(/^model: sonnet$/m);
   });
@@ -182,6 +184,7 @@ describe('저장을 막는 조건 — 레포 그대로', () => {
   test('바뀌는 것이 없음·없는 워커·모르는 값 → blocked', async () => {
     const { kr, srv } = await setup();
     const head = kr.head();
+    const remote = kr.remoteHead();
     for (const body of [{ worker: 'impl', model: 'sonnet', effort: 'medium' }, { worker: '없는워커', model: 'opus', effort: 'xhigh' }, { worker: 'impl', model: 'gpt', effort: 'xhigh' }]) {
       resetSaveState();
       const job = await save(srv, body);
@@ -190,12 +193,14 @@ describe('저장을 막는 조건 — 레포 그대로', () => {
     }
     expect(kr.head()).toBe(head);
     expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(remote);
   });
 });
 
 describe('원격과 비교', () => {
   test('뒤처짐 → 저장 거부 → 받아오기 → same → 저장', async () => {
     const { kr, srv } = await setup();
+    const base = kr.head();
     const theirs = pushFromOther(kr);
     const st = await srv.call('GET', '/api/kit/remote');
     expect(st.status).toBe(200);
@@ -203,6 +208,9 @@ describe('원격과 비교', () => {
     const blocked = await save(srv, { worker: 'impl', model: 'opus', effort: 'xhigh' });
     expect(blocked.status).toBe('failed');
     expect(blocked.error).toMatchObject({ kind: 'blocked', message: expect.stringMatching(/뒤처졌다/) });
+    expect(kr.head()).toBe(base);
+    expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(theirs);
 
     const pull = await srv.call('POST', '/api/kit/pull');
     expect(pull.status).toBe(200);
@@ -238,6 +246,7 @@ describe('원격과 비교', () => {
 
   test('원격에 닿지 못하면 fetchError + 저장 막음', async () => {
     const { kr, srv } = await setup();
+    const remote = kr.remoteHead();
     kr.git('remote', 'set-url', 'origin', path.join(kr.root, '없는 원격.git'));
     const st = await srv.call('GET', '/api/kit/remote');
     expect(st.body.fetchError).toBeTruthy();
@@ -247,6 +256,7 @@ describe('원격과 비교', () => {
     expect(job.error.kind).toBe('blocked');
     expect(kr.head()).toBe(head);
     expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(remote);
   });
 });
 
@@ -282,7 +292,7 @@ describe('push 거부', () => {
   }
 
   test('커밋 취소 → 저장 전 HEAD, 깨끗, cancelled', async () => {
-    const { kr, srv, base, job } = await rejected();
+    const { kr, srv, base, job, theirs } = await rejected();
     // HEAD 가 우리 커밋이 아니면 거부
     kr.commitFile(kr.repo, 'EXTRA.md', 'x', '딴 커밋');
     const refused = await srv.call('POST', '/api/kit/save/cancel');
@@ -295,11 +305,34 @@ describe('push 거부', () => {
     expect(r.body.status).toBe('cancelled');
     expect(kr.head()).toBe(base);
     expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(theirs); // 우리 커밋은 원격에 안 올라갔다
     expect(readVersions(kr.repo).kitYaml).toBe('0.0.1');
     // 한 번 더는 못 한다
     expect((await srv.call('POST', '/api/kit/save/cancel')).status).toBe(409);
     expect((await srv.call('POST', '/api/kit/save/retry')).status).toBe(409);
   });
+
+  for (const action of ['cancel', 'retry'] as const) {
+    test(`작업 트리에 변경이 있으면 ${action} 거부 — 파일·HEAD 그대로, 다시 누를 수 있다`, async () => {
+      const { kr, srv, job, theirs } = await rejected();
+      const memo = path.join(kr.repo, '저장 안 한 메모.txt');
+      fs.writeFileSync(memo, '지우면 안 된다');
+      const r = await srv.call('POST', `/api/kit/save/${action}`);
+      expect(r.status).toBe(409);
+      expect(r.body.error).toMatch(/저장 안 한 변경이 있어서 되돌리지 않았다/);
+      expect(fs.readFileSync(memo, 'utf8')).toBe('지우면 안 된다');
+      expect(kr.head()).toBe(job.commit!.sha);
+      expect(kr.porcelain()).toMatch(/^\?\? /);
+      expect(kr.remoteHead()).toBe(theirs);
+      expect((await srv.call('GET', '/api/kit/save')).body.status).toBe('push-failed');
+      // 치우면 다시 된다
+      fs.rmSync(memo);
+      const again = await srv.call('POST', `/api/kit/save/${action}`);
+      expect(again.status).toBe(200);
+      if (action === 'retry') expect((await saveSettled()).status).toBe('done');
+      else expect(again.body.status).toBe('cancelled');
+    });
+  }
 
   test('받아와서 다시 push → 다른 clone 커밋 위에 우리 커밋, 버전은 새 base +1', async () => {
     const { kr, srv, theirs, job } = await rejected('0.0.5');

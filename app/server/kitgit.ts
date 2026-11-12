@@ -90,7 +90,10 @@ export async function pullFastForward(repo: string): Promise<GitResult> {
 }
 
 // HEAD 가 우리 커밋(sha)이고 그 부모가 저장 전 HEAD(baseSha)일 때만 저장 전으로 되돌린다
+// 작업 트리에 커밋 안 한 변경(untracked 포함)이 있으면 reset --hard 가 지우므로 되돌리지 않는다
 export async function undoOwnCommit(repo: string, sha: string, baseSha: string): Promise<GitResult> {
+  const dirty = await porcelain(repo);
+  if (dirty.length) return { ok: false, message: `kit 레포에 저장 안 한 변경이 있어서 되돌리지 않았다 (${dirty.length}개: ${dirty.slice(0, 3).map((l) => l.slice(3)).join(', ')}${dirty.length > 3 ? ' …' : ''}) — 그 변경을 커밋하거나 치운 뒤 다시` };
   const head = await headSha(repo);
   if (head !== sha) return { ok: false, message: `HEAD(${head.slice(0, 7)})가 방금 만든 커밋(${sha.slice(0, 7)})이 아니어서 되돌리지 않는다` };
   const p = await kitGit(repo, ['rev-parse', '--verify', '-q', `${sha}^`]);
