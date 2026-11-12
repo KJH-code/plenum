@@ -48,9 +48,21 @@ function pushFromOther(kr: KitRepo, rel = 'NOTES.md', content = '다른 곳에�
 const changedFiles = (kr: KitRepo, rev = 'HEAD') => kr.git('show', '--name-only', '--format=', rev).split('\n').filter(Boolean);
 const diffLines = (kr: KitRepo, file: string) => kr.git('diff', '-U0', 'HEAD~1', 'HEAD', '--', file).split('\n').filter((l) => /^[-+]/.test(l) && !/^(---|\+\+\+) /.test(l));
 
-describe('정상 저장', () => {
+// crlf: Windows 기본(core.autocrlf=true) 레포에서도 같은 장면
+const MODES = [{ crlf: false, name: '' }, { crlf: true, name: ' [autocrlf=true]' }];
+
+// autocrlf 레포: 작업 트리는 CRLF, 커밋된 kit·build 는 전부 LF (다른 곳에서 빌드한 것과 같다)
+function expectCrlfCheckout(kr: KitRepo) {
+  expect(fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'impl.md'), 'utf8')).toContain('\r\n');
+  const eol = kr.git('ls-files', '--eol', '--', 'kit', 'build').split('\n').filter(Boolean);
+  expect(eol.length).toBeGreaterThan(5);
+  expect(eol.filter((l) => !/^i\/(lf|none)\s/.test(l))).toEqual([]);
+}
+
+for (const mode of MODES) describe(`정상 저장${mode.name}`, () => {
   test('impl sonnet medium → opus xhigh: 커밋 1개가 원격에, 바뀐 파일·줄·버전·메시지', async () => {
-    const { kr, srv } = await setup();
+    const { kr, srv } = await setup({ autocrlf: mode.crlf });
+    if (mode.crlf) expectCrlfCheckout(kr);
     const base = kr.head();
     expect((await srv.call('GET', '/api/kit/save')).body.status).toBe('idle');
 
@@ -84,7 +96,12 @@ describe('정상 저장', () => {
     expect(readVersions(kr.repo)).toEqual({ kitYaml: '0.0.2', packageJson: '0.0.2', lockTop: '0.0.2', lockRoot: '0.0.2' });
     expect(kr.git('log', '-1', '--format=%B').trim()).toBe('impl: model sonnet → opus, effort medium → xhigh (0.0.2)');
     expect(job.commitMessage).toBe('impl: model sonnet → opus, effort medium → xhigh (0.0.2)');
-    expect(fs.readFileSync(path.join(kr.repo, 'build', 'claude-code', 'agents', 'impl.md'), 'utf8')).toMatch(/^model: opus$/m);
+    expect(fs.readFileSync(path.join(kr.repo, 'build', 'claude-code', 'agents', 'impl.md'), 'utf8')).toMatch(/^model: opus\r?$/m);
+    if (mode.crlf) {
+      expectCrlfCheckout(kr);
+      // 바꾼 워커 파일은 원래 줄바꿈(CRLF) 그대로
+      expect(fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'impl.md'), 'utf8')).toContain('model: opus\r\neffort: xhigh\r\n');
+    }
   });
 });
 
@@ -260,10 +277,10 @@ describe('원격과 비교', () => {
   });
 });
 
-describe('push 거부', () => {
+for (const mode of MODES) describe(`push 거부${mode.name}`, () => {
   // 검사 뒤·push 직전에 다른 clone 이 push → 우리 push 거부
   async function rejected(otherVersion?: string) {
-    const s = await setup();
+    const s = await setup({ autocrlf: mode.crlf });
     const base = s.kr.head();
     let theirs = '';
     startSave(s.kr.repo, { worker: 'impl', model: 'opus', effort: 'xhigh' }, {
@@ -329,7 +346,7 @@ describe('push 거부', () => {
       fs.rmSync(memo);
       const again = await srv.call('POST', `/api/kit/save/${action}`);
       expect(again.status).toBe(200);
-      if (action === 'retry') expect((await saveSettled()).status).toBe('done');
+      if (action === 'retry') { const d = await saveSettled(); expect(d.status, JSON.stringify(d.error)).toBe('done'); }
       else expect(again.body.status).toBe('cancelled');
     });
   }
@@ -340,7 +357,7 @@ describe('push 거부', () => {
     expect(r.status).toBe(200);
     expect(r.body.id).toBeGreaterThan(job.id);
     const done = await saveSettled();
-    expect(done.status).toBe('done');
+    expect(done.status, JSON.stringify(done.error)).toBe('done');
     expect(done.newVersion).toBe('0.0.6');
     expect(kr.remoteHead()).toBe(kr.head());
     expect(kr.git('rev-parse', 'HEAD~1').trim()).toBe(theirs);
@@ -348,6 +365,8 @@ describe('push 거부', () => {
     expect(readVersions(kr.repo)).toEqual({ kitYaml: '0.0.6', packageJson: '0.0.6', lockTop: '0.0.6', lockRoot: '0.0.6' });
     expect(kr.git('log', '-1', '--format=%s').trim()).toBe('impl: model sonnet → opus, effort medium → xhigh (0.0.6)');
     expect(kr.porcelain()).toBe('');
+    expect(diffLines(kr, 'kit/workers/impl.md')).toEqual(['-model: sonnet', '-effort: medium', '+model: opus', '+effort: xhigh']);
+    if (mode.crlf) expectCrlfCheckout(kr);
   });
 });
 

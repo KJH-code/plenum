@@ -73,7 +73,9 @@ export interface KitRepo {
   commitFile(dir: string, rel: string, content: string, message: string): string;
 }
 
-export function makeKitRepo(opts: { setup?: (repo: string) => void } = {}): KitRepo {
+// autocrlf: Windows git 기본값처럼 core.autocrlf=true 인 레포 (커밋은 LF, 작업 트리는 CRLF).
+// 레포 로컬 config 에만 넣어서 다른 테스트로 새지 않는다. other() clone 도 같은 설정.
+export function makeKitRepo(opts: { setup?: (repo: string) => void; autocrlf?: boolean } = {}): KitRepo {
   const root = path.join(tmpDir('plenum-kit-'), '홍길동 홈', 'jh kit');
   fs.mkdirSync(root, { recursive: true });
   const remote = path.join(root, 'remote.git');
@@ -93,13 +95,19 @@ export function makeKitRepo(opts: { setup?: (repo: string) => void } = {}): KitR
   git(repo, 'commit', '-q', '-m', '처음');
   git(repo, 'remote', 'add', 'origin', remote);
   git(repo, 'push', '-q', '-u', 'origin', 'main');
+  if (opts.autocrlf) {
+    git(repo, 'config', 'core.autocrlf', 'true');
+    // 새 clone 처럼 작업 트리를 다시 체크아웃 → 텍스트 파일이 CRLF 가 된다
+    for (const f of git(repo, 'ls-files', '-z').split('\0').filter(Boolean)) fs.rmSync(path.join(repo, ...f.split('/')));
+    git(repo, 'checkout', '-q', '--', '.');
+  }
 
   let n = 0;
   const kr: KitRepo = {
     root, repo, remote,
     other() {
       const dir = path.join(root, `다른 클론 ${++n}`);
-      git(root, 'clone', '-q', remote, dir);
+      git(root, 'clone', '-q', ...(opts.autocrlf ? ['-c', 'core.autocrlf=true'] : []), remote, dir);
       return dir;
     },
     git: (...args) => git(repo, ...args),

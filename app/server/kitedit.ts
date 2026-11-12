@@ -1,5 +1,6 @@
 // 워커 model·effort 저장의 파일 편집 부분. 원문 줄을 그대로 두고 바뀌는 줄의 값만 바꾼다 (YAML로 다시 직렬화하지 않는다).
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,40 @@ export const MODELS = ['opus', 'sonnet', 'haiku', 'fable'];
 export const EFFORTS: string[] = [...kitLib.EFFORTS];
 export const tierOf = (model: string, effort: string) => kitLib.tierOf({ model, effort });
 export const loadKit = kitLib.loadKit;
+
+// 텍스트 파일 판정: 앞 8000바이트에 NUL 없음 (git과 같은 판정)
+const isText = (buf: Buffer) => !buf.subarray(0, 8000).includes(0);
+export const toLf = (s: string) => s.replace(/\r\n/g, '\n');
+
+// kit 폴더 복사. lf(rel) 이 참인 텍스트 파일은 CRLF → LF 로 바꿔 쓴다. 실행 비트는 유지(컴파일러가 본다).
+// fs.cpSync 대신 (Windows 한글 경로 아래에 파일을 안 만들었다)
+export function copyKit(src: string, dest: string, lf: (rel: string) => boolean, rel = '') {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) copyKit(s, d, lf, r);
+    else if (e.isFile()) {
+      const buf = fs.readFileSync(s);
+      fs.writeFileSync(d, lf(r) && isText(buf) && buf.includes(0x0d) ? Buffer.from(toLf(buf.toString('latin1')), 'latin1') : buf);
+      fs.chmodSync(d, fs.statSync(s).mode & 0o777);
+    }
+  }
+}
+
+// kit 읽기. Windows git(core.autocrlf=true)은 체크아웃할 때 LF를 CRLF로 바꾸는데, 컴파일러의 머리말 파서는
+// 첫 줄이 정확히 '---' 여야 해서 CRLF 워커 파일을 못 읽는다. LF로 바꾼 임시 사본에서 읽는다(원본은 그대로).
+export function loadKitLf(kitDir: string): any {
+  if (!fs.existsSync(path.join(kitDir, 'kit.yaml'))) return loadKit(kitDir); // 컴파일러의 "kit.yaml이 없음" 오류 그대로
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plenum-kit-'));
+  try {
+    copyKit(kitDir, path.join(tmp, 'kit'), () => true);
+    return loadKit(path.join(tmp, 'kit'));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
 
 // 저장 검사에서 나는 오류. kind는 SaveError.kind 로 그대로 간다
 export class EditError extends Error {
@@ -143,7 +178,7 @@ export function planSave(repo: string, worker: unknown, model: unknown, effort: 
   if (typeof worker !== 'string' || !worker) throw new EditError('blocked', '워커 이름이 비어 있다');
   try { checkValues(model, effort); } catch (e: any) { throw new EditError('blocked', e.message); }
   let kit: any;
-  try { kit = loadKit(path.join(repo, 'kit')); } catch (e: any) { throw new EditError('other', `kit을 읽지 못했다 — ${e.message}`); }
+  try { kit = loadKitLf(path.join(repo, 'kit')); } catch (e: any) { throw new EditError('other', `kit을 읽지 못했다 — ${e.message}`); }
   const w = kit.workers.get(worker);
   if (!w) throw new EditError('blocked', `워커가 없다: ${worker}`);
   const workerFile = `kit/workers/${w.file}`;

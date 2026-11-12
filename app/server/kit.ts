@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { EFFORTS, MODELS } from './kitedit.ts';
+import { EFFORTS, MODELS, loadKitLf } from './kitedit.ts';
 
 const require = createRequire(import.meta.url);
 const COMPILER_LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'compiler', 'lib');
@@ -17,7 +17,7 @@ try {
   }
   throw e;
 }
-const { loadKit, validate } = compiler;
+const { validate } = compiler;
 
 // 모드 파일 id → 화면 이름. 순서도 이 순서 (mode 스킬의 선택지 순서). tables/ 중에는 check 만 "쓰는 모드"로 센다
 // (tables/workers.yaml 은 references/workers.md 전체 목록이라 모드가 아니다).
@@ -67,7 +67,7 @@ export function readKit(repo: string | null): KitView | KitProblem {
   if (!fs.existsSync(path.join(kitDir, 'kit.yaml'))) return { ok: false, repo, message: `kit/kit.yaml이 없다: ${kitDir}` };
   let kit: any;
   try {
-    kit = loadKit(kitDir);
+    kit = loadKitLf(kitDir); // CRLF 체크아웃(core.autocrlf)도 읽는다
     validate(kit);
   } catch (e: any) {
     return { ok: false, repo, message: `kit을 읽지 못했다 — ${e.message}` };

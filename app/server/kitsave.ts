@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { UserError } from './errors.ts';
-import { EditError, mapWarning, planSave, readVersions, type SavePlan } from './kitedit.ts';
+import { copyKit, EditError, mapWarning, planSave, readVersions, toLf, type SavePlan } from './kitedit.ts';
 import { headSha, kitGit, porcelain, pullFastForward, remoteStatus, undoOwnCommit } from './kitgit.ts';
 import { commandFor, resolveCommand, runCommand } from './open.ts';
 import { run } from './run.ts';
@@ -60,15 +60,27 @@ export async function saveSettled(): Promise<SaveJob> {
 
 export const compilerBin = (repo: string) => path.join(repo, 'node_modules', 'plenum', 'bin', 'plenum-compile');
 
-// fs.cpSync 대신 (Windows 한글 경로 아래에 파일을 안 만들었다)
-function copyDir(src: string, dest: string) {
-  fs.mkdirSync(dest, { recursive: true });
-  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, e.name);
-    const d = path.join(dest, e.name);
-    if (e.isDirectory()) copyDir(s, d);
-    else if (e.isFile()) fs.copyFileSync(s, d);
+// kit/ 안에서 git 이 체크아웃할 때만 CRLF 로 바꾼 파일 (core.autocrlf=true: 커밋 내용은 LF, 작업 트리는 CRLF). kit 기준 상대경로.
+// 컴파일러 머리말 파서는 CRLF 를 못 읽으므로 이 파일들은 커밋될 내용(LF)으로 바꿔서 빌드한다.
+// 커밋 내용 자체가 CRLF 인 파일은 그대로 둔다 — 다른 곳(CI·npm run build)에서 빌드한 것과 같아야 한다.
+async function crlfOnlyInWorktree(repo: string): Promise<Set<string>> {
+  const r = await kitGit(repo, ['ls-files', '--eol', '-z', '--', 'kit']);
+  if (r.code !== 0) throw fail('git', `git ls-files --eol 실패: ${outText(r.stderr)}`);
+  const set = new Set<string>();
+  for (const ent of r.stdout.split('\0')) {
+    const tab = ent.indexOf('\t');
+    if (tab < 0) continue;
+    const [i, w] = ent.slice(0, tab).trim().split(/\s+/);
+    if (i === 'i/lf' && (w === 'w/crlf' || w === 'w/mixed')) set.add(ent.slice(tab + 1).replace(/^kit\//, ''));
   }
+  return set;
+}
+
+// 레포 kit/ 를 빌드용 임시 kit 폴더로 (위 파일들은 LF 로)
+async function copyKitForBuild(repo: string, dest: string): Promise<Set<string>> {
+  const lf = await crlfOnlyInWorktree(repo);
+  copyKit(path.join(repo, 'kit'), dest, (rel) => lf.has(rel));
+  return lf;
 }
 
 class StepFail extends Error {
@@ -125,9 +137,10 @@ async function pipeline(repo: string, j: SaveJob, input: SaveInput, hooks: SaveH
     try {
       const tmpKit = path.join(tmp, 'kit');
       const tmpOut = path.join(tmp, 'out');
-      copyDir(path.join(repo, 'kit'), tmpKit);
-      fs.writeFileSync(path.join(tmp, ...plan.workerFile.split('/')), plan.newWorkerText);
-      fs.writeFileSync(path.join(tmpKit, 'kit.yaml'), plan.newKitYaml);
+      const lf = await copyKitForBuild(repo, tmpKit);
+      const workerRel = plan.workerFile.replace(/^kit\//, '');
+      fs.writeFileSync(path.join(tmpKit, ...workerRel.split('/')), lf.has(workerRel) ? toLf(plan.newWorkerText) : plan.newWorkerText);
+      fs.writeFileSync(path.join(tmpKit, 'kit.yaml'), lf.has('kit.yaml') ? toLf(plan.newKitYaml) : plan.newKitYaml);
       const r = await run(process.execPath, [bin, '--kit', tmpKit, '--out', tmpOut, '--json'], { cwd: repo, timeoutMs: COMPILE_MS });
       if (r.code !== 0) throw compileError(r.stderr, r.stdout);
       let parsed: { files: number; warnings: { file: string; line: number; message: string }[] };
@@ -154,8 +167,15 @@ async function pipeline(repo: string, j: SaveJob, input: SaveInput, hooks: SaveH
     if (v.packageJson !== plan.newVersion || v.lockTop !== plan.newVersion || v.lockRoot !== plan.newVersion) {
       throw fail('version', `npm version 뒤 버전이 ${plan.newVersion}이 아니다 — package.json ${v.packageJson}, package-lock.json ${v.lockTop} (packages[""] ${v.lockRoot})`);
     }
-    const b = await run(process.execPath, [bin], { cwd: repo, timeoutMs: COMPILE_MS });
-    if (b.code !== 0) throw compileError(b.stderr, b.stdout);
+    // npm run build 와 같은 결과를, 체크아웃 줄바꿈과 상관없이 커밋될 내용으로 (out 은 레포 build/claude-code)
+    const btmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plenum-build-'));
+    try {
+      await copyKitForBuild(repo, path.join(btmp, 'kit'));
+      const b = await run(process.execPath, [bin, '--kit', path.join(btmp, 'kit'), '--out', path.join(repo, 'build', 'claude-code')], { cwd: repo, timeoutMs: COMPILE_MS });
+      if (b.code !== 0) throw compileError(b.stderr, b.stdout);
+    } finally {
+      fs.rmSync(btmp, { recursive: true, force: true });
+    }
     step('build').state = 'ok';
 
     // 3. commit — 손댄 경로만
