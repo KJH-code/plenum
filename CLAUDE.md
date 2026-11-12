@@ -15,8 +15,8 @@ DevVault: Projects/jh-kit
 - `compiler/pack.js` — `plenum-pack [--build <dir>] [--out <file>]`. 기본 `<cwd>/dist/<name>-<version>.zip`
 - `compiler/lib/` — `kit.js`(kit 읽기·모델), `claude-code.js`(타깃 컴파일러·검증), `render.js`(토큰), `prose.js`(산문 경고)
 - `compiler/test/` — fixture kit(`fixtures/kit`)으로 도는 컴파일러·pack 테스트
-- `app/server/` — `node:http` 서버. config(설정·목록), git(감지·clone), projects, kit(워커: 컴파일러의 `loadKit` 재사용), versions(트리 해시), open(폴더·에디터 명령)
-- `app/web/src/` — React. `theme.css` 색 토큰 접두어 `--bg-*`·`--fg-*`·`--line-*`(대비 테스트가 모든 쌍을 잰다), 해시 라우팅
+- `app/server/` — `node:http` 서버. config(설정·목록), git(감지·clone), projects, kit(워커: 컴파일러의 `loadKit` 재사용), versions(트리 해시), open(폴더·에디터·외부 명령 실행 `commandFor`·`runCommand`), kitedit(워커 머리말·버전 줄 고치기, 미리보기), kitgit(원격 비교·받아오기·우리 커밋 되돌리기), kitsave(저장 job: 검사→빌드→commit→push), install(설치본 반영)
+- `app/web/src/` — React. 설정 › 워커 편집은 `WorkerEdit.tsx`, 설치본 반영은 `InstallPanel.tsx`. `theme.css` 색 토큰 접두어 `--bg-*`·`--fg-*`·`--line-*`(대비 테스트가 모든 쌍을 잰다), 해시 라우팅
 - `app/test/` — Vitest, `app/e2e/screens.ts` — Playwright 스크린샷
 
 ## 명령
