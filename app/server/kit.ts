@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { EFFORTS, MODELS, loadKitLf } from './kitedit.ts';
 
 const require = createRequire(import.meta.url);
 const COMPILER_LIB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'compiler', 'lib');
@@ -16,7 +17,7 @@ try {
   }
   throw e;
 }
-const { loadKit, validate } = compiler;
+const { validate } = compiler;
 
 // 모드 파일 id → 화면 이름. 순서도 이 순서 (mode 스킬의 선택지 순서). tables/ 중에는 check 만 "쓰는 모드"로 센다
 // (tables/workers.yaml 은 references/workers.md 전체 목록이라 모드가 아니다).
@@ -52,6 +53,8 @@ export interface KitView {
   version: string;
   stages: string[];
   workers: WorkerView[];
+  options: { models: string[]; efforts: string[] };
+  tiers: string[];        // kit.yaml tiers 의 tier 문자열 (예: Sonnet medium)
 }
 
 export interface KitProblem { ok: false; repo: string | null; message: string }
@@ -64,7 +67,7 @@ export function readKit(repo: string | null): KitView | KitProblem {
   if (!fs.existsSync(path.join(kitDir, 'kit.yaml'))) return { ok: false, repo, message: `kit/kit.yaml이 없다: ${kitDir}` };
   let kit: any;
   try {
-    kit = loadKit(kitDir);
+    kit = loadKitLf(kitDir); // CRLF 체크아웃(core.autocrlf)도 읽는다
     validate(kit);
   } catch (e: any) {
     return { ok: false, repo, message: `kit을 읽지 못했다 — ${e.message}` };
@@ -103,5 +106,6 @@ export function readKit(repo: string | null): KitView | KitProblem {
   const stages: string[] = kit.meta.stages.map(String);
   const order = (s: string) => stages.indexOf(s);
   workers.sort((a, b) => order(a.stage) - order(b.stage) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { ok: true, repo, name: String(kit.meta.name), version: String(kit.meta.version), stages, workers };
+  const tiers = (Array.isArray(kit.meta.tiers) ? kit.meta.tiers : []).map((r: any) => String(r && r.tier));
+  return { ok: true, repo, name: String(kit.meta.name), version: String(kit.meta.version), stages, workers, options: { models: [...MODELS], efforts: [...EFFORTS] }, tiers };
 }

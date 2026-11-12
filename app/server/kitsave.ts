@@ -1,0 +1,339 @@
+// 워커 model·effort 저장 파이프라인: 검사 → 빌드 → commit → push. 한 번에 하나만 돈다.
+// 검사가 끝날 때까지 레포에 쓰지 않는다. 빌드·commit 이 실패하면 손댄 경로만 되돌린다.
+// push 가 거부되면 자동으로 합치지 않고 멈춘다 → retry(받아와서 다시) 또는 cancel(커밋 취소).
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { UserError } from './errors.ts';
+import { copyKit, EditError, mapWarning, planSave, readVersions, toLf, type SavePlan } from './kitedit.ts';
+import { commitOnRemote, headSha, kitGit, porcelain, pullFastForward, remoteStatus, undoOwnCommit } from './kitgit.ts';
+import { commandFor, resolveCommand, runCommand } from './open.ts';
+import { run } from './run.ts';
+
+export type StepKey = 'check' | 'build' | 'commit' | 'push';
+export type StepState = 'wait' | 'run' | 'ok' | 'warn' | 'fail' | 'skip';
+export interface SaveError { kind: 'blocked' | 'compiler' | 'version' | 'tier' | 'build' | 'git' | 'other'; message: string; tier?: string; file?: string }
+export interface SaveJob {
+  id: number; worker: string; model: string; effort: string;
+  status: 'idle' | 'running' | 'done' | 'failed' | 'push-failed' | 'cancelled';
+  steps: { key: StepKey; state: StepState; detail: string }[];
+  warnings: { file: string; line: number; message: string }[];
+  error: SaveError | null;
+  pushError: { kind: 'rejected' | 'other'; message: string } | null;
+  baseSha: string | null; commit: { sha: string; short: string } | null;
+  newVersion: string | null; commitMessage: string | null;
+  notice: string | null; // 끝난 뒤 덧붙이는 안내 (예: push 실패로 보였지만 원격에 이미 있음)
+}
+export interface SaveInput { worker: string; model: string; effort: string }
+// 테스트 전용: afterCheck = 검사 뒤·레포에 쓰기 전, beforeCommit = 빌드 뒤·git commit 직전, beforePush = commit 뒤·push 전
+export interface SaveHooks { afterCheck?: () => Promise<void>; beforeCommit?: () => Promise<void>; beforePush?: () => Promise<void> }
+
+const STEPS: StepKey[] = ['check', 'build', 'commit', 'push'];
+const COMPILE_MS = 120000;
+
+let job: SaveJob | null = null;
+let jobRepo: string | null = null;
+let running: Promise<void> | null = null;
+let nextId = 1;
+let busy = false; // retry·cancel 이 되돌리는 중
+
+const blank = (id: number, input: Partial<SaveInput>, status: SaveJob['status']): SaveJob => ({
+  id, worker: input.worker ?? '', model: input.model ?? '', effort: input.effort ?? '', status,
+  steps: STEPS.map((key) => ({ key, state: 'wait' as StepState, detail: '' })),
+  warnings: [], error: null, pushError: null, baseSha: null, commit: null, newVersion: null, commitMessage: null, notice: null,
+});
+
+const snapshot = (j: SaveJob): SaveJob => structuredClone(j);
+
+export function getSave(): SaveJob {
+  return job ? snapshot(job) : blank(0, {}, 'idle');
+}
+
+// 저장(또는 retry·cancel 되돌리기)이 도는 중인가 — 그동안 받아오기는 하지 않는다
+export function isSaving(): boolean {
+  return !!running || busy;
+}
+
+// 테스트용: 상태 초기화
+export function resetSaveState() {
+  job = null; jobRepo = null; running = null; nextId = 1; busy = false;
+}
+
+// 테스트용: 돌고 있는 저장이 끝날 때까지
+export async function saveSettled(): Promise<SaveJob> {
+  while (running) await running;
+  return getSave();
+}
+
+export const compilerBin = (repo: string) => path.join(repo, 'node_modules', 'plenum', 'bin', 'plenum-compile');
+
+// kit/ 안에서 git 이 체크아웃할 때만 CRLF 로 바꾼 파일 (core.autocrlf=true: 커밋 내용은 LF, 작업 트리는 CRLF). kit 기준 상대경로.
+// 컴파일러 머리말 파서는 CRLF 를 못 읽으므로 이 파일들은 커밋될 내용(LF)으로 바꿔서 빌드한다.
+// 커밋 내용 자체가 CRLF 인 파일은 그대로 둔다 — 다른 곳(CI·npm run build)에서 빌드한 것과 같아야 한다.
+async function crlfOnlyInWorktree(repo: string): Promise<Set<string>> {
+  const r = await kitGit(repo, ['ls-files', '--eol', '-z', '--', 'kit']);
+  if (r.code !== 0) throw fail('git', `git ls-files --eol 실패: ${outText(r.stderr)}`);
+  const set = new Set<string>();
+  for (const ent of r.stdout.split('\0')) {
+    const tab = ent.indexOf('\t');
+    if (tab < 0) continue;
+    const [i, w] = ent.slice(0, tab).trim().split(/\s+/);
+    if (i === 'i/lf' && (w === 'w/crlf' || w === 'w/mixed')) set.add(ent.slice(tab + 1).replace(/^kit\//, ''));
+  }
+  return set;
+}
+
+// 레포 kit/ 를 빌드용 임시 kit 폴더로 (위 파일들은 LF 로)
+async function copyKitForBuild(repo: string, dest: string): Promise<Set<string>> {
+  const lf = await crlfOnlyInWorktree(repo);
+  copyKit(path.join(repo, 'kit'), dest, (rel) => lf.has(rel));
+  return lf;
+}
+
+class StepFail extends Error {
+  constructor(public err: SaveError) { super(err.message); }
+}
+const fail = (kind: SaveError['kind'], message: string, extra: Partial<SaveError> = {}) => new StepFail({ kind, message, ...extra });
+const outText = (s: string) => s.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' / ');
+const CHANGED = '저장하는 동안 kit 레포가 바뀌었다 — 다시 저장';
+const readOr = (f: string) => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
+
+// 레포가 검사 때와 같은가: HEAD 가 baseSha 이고 워커 파일·kit.yaml 이 기대한 내용
+async function unchanged(repo: string, baseSha: string, workerFile: string, workerText: string, kitYaml: string): Promise<boolean> {
+  let head: string;
+  try { head = await headSha(repo); } catch { return false; }
+  return head === baseSha
+    && readOr(path.join(repo, ...workerFile.split('/'))) === workerText
+    && readOr(path.join(repo, 'kit', 'kit.yaml')) === kitYaml;
+}
+
+// 컴파일러 ERROR 줄 → 오류. 계층 행이 없으면 tier
+function compileError(stderr: string, stdout: string): StepFail {
+  const line = stderr.split(/\r?\n/).find((l) => l.startsWith('ERROR ')) ?? '';
+  const msg = line ? line.slice(6).trim() : outText(stderr || stdout) || '컴파일러가 실패했다';
+  const t = /계층 행 없음: (.+?) — kit\.yaml tiers/.exec(msg);
+  if (t) return fail('tier', `kit.yaml tiers에 "${t[1]}" 행이 없다 — kit/kit.yaml tiers에 행을 추가한 뒤 다시 저장한다`, { tier: t[1], file: 'kit/kit.yaml' });
+  if (/tiers/.test(msg)) return fail('tier', msg, { file: 'kit/kit.yaml' });
+  return fail('build', `빌드 실패: ${msg}`);
+}
+
+export function startSave(repo: string, input: SaveInput, opts: { hooks?: SaveHooks } = {}): SaveJob {
+  if (running || busy) throw new UserError(409, '저장이 이미 진행 중이다');
+  const j = blank(nextId++, input, 'running');
+  job = j;
+  jobRepo = repo;
+  // 다음 틱에 시작한다 — 돌려주는 상태는 언제나 시작 직후(running)
+  const p = Promise.resolve().then(() => pipeline(repo, j, input, opts.hooks ?? {})).finally(() => { if (running === p) running = null; });
+  running = p;
+  return snapshot(j);
+}
+
+async function pipeline(repo: string, j: SaveJob, input: SaveInput, hooks: SaveHooks) {
+  const step = (k: StepKey) => j.steps.find((s) => s.key === k)!;
+  let current: StepKey = 'check';
+  let wrote = false; // 진짜 레포에 쓰기 시작했는지 (롤백 필요)
+  let plan: SavePlan | null = null;
+  let kitYamlStart: string | null = null; // 저장 시작 때 kit.yaml 에 커밋 안 한 사용자 변경이 있었으면 그 내용 (롤백은 여기로)
+  const begin = (k: StepKey, detail = '') => { current = k; step(k).state = 'run'; step(k).detail = detail; };
+  try {
+    // 1. 검사 — 레포에 쓰지 않는다
+    begin('check', '검사');
+    const bin = compilerBin(repo);
+    if (!fs.existsSync(bin)) throw fail('compiler', `kit 레포에 컴파일러가 없다 (node_modules/plenum/bin/plenum-compile) — kit 레포에서 npm ci 필요`);
+    const st = await remoteStatus(repo, { fetch: true });
+    if (st.blockers.length) throw fail('blocked', st.blockers.join(' / '));
+    j.baseSha = st.head;
+    const base = st.head;
+    try { plan = planSave(repo, input.worker, input.model, input.effort); } catch (e: any) {
+      if (e instanceof EditError) throw fail(e.kind, e.message);
+      throw e;
+    }
+    if (st.kitYamlDirty) kitYamlStart = plan.oldKitYaml;
+    j.newVersion = plan.newVersion;
+    j.commitMessage = plan.commitMessage;
+    if (!plan.tiers.includes(plan.tier)) {
+      throw fail('tier', `kit.yaml tiers에 "${plan.tier}" 행이 없다 — kit/kit.yaml tiers에 행을 추가한 뒤 다시 저장한다`, { tier: plan.tier, file: 'kit/kit.yaml' });
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plenum-save-'));
+    try {
+      const tmpKit = path.join(tmp, 'kit');
+      const tmpOut = path.join(tmp, 'out');
+      const lf = await copyKitForBuild(repo, tmpKit);
+      const workerRel = plan.workerFile.replace(/^kit\//, '');
+      fs.writeFileSync(path.join(tmpKit, ...workerRel.split('/')), lf.has(workerRel) ? toLf(plan.newWorkerText) : plan.newWorkerText);
+      fs.writeFileSync(path.join(tmpKit, 'kit.yaml'), lf.has('kit.yaml') ? toLf(plan.newKitYaml) : plan.newKitYaml);
+      const r = await run(process.execPath, [bin, '--kit', tmpKit, '--out', tmpOut, '--json'], { cwd: repo, timeoutMs: COMPILE_MS });
+      if (r.code !== 0) throw compileError(r.stderr, r.stdout);
+      let parsed: { files: number; warnings: { file: string; line: number; message: string }[] };
+      try { parsed = JSON.parse(r.stdout.trim().split(/\r?\n/).pop() || ''); } catch { throw fail('build', `컴파일러 출력을 읽지 못했다: ${outText(r.stdout)}`); }
+      j.warnings = (parsed.warnings || []).map((w) => mapWarning(repo, tmpKit, w, tmpOut));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    step('check').state = j.warnings.length ? 'warn' : 'ok';
+    step('check').detail = j.warnings.length ? `plenum-compile --json · 경고 ${j.warnings.length}개` : 'plenum-compile --json';
+
+    if (hooks.afterCheck) await hooks.afterCheck();
+
+    // 2. 빌드 — 여기부터 레포에 쓴다. 쓰기 직전에 검사 때 읽은 그대로인지 다시 본다(그사이 받아오기 등)
+    begin('build', 'npm version patch · plenum-compile');
+    if (!(await unchanged(repo, base, plan.workerFile, plan.oldWorkerText, plan.oldKitYaml))) throw fail('git', CHANGED);
+    wrote = true;
+    fs.writeFileSync(path.join(repo, ...plan.workerFile.split('/')), plan.newWorkerText);
+    fs.writeFileSync(path.join(repo, 'kit', 'kit.yaml'), plan.newKitYaml);
+    const npm = resolveCommand('npm');
+    if (!npm) throw fail('other', 'npm을 PATH에서 못 찾았다');
+    let cmd;
+    try { cmd = commandFor(npm, ['version', 'patch', '--no-git-tag-version']); } catch (e: any) { throw fail('other', e.message); }
+    const nv = await runCommand(cmd, { cwd: repo, timeoutMs: COMPILE_MS });
+    if (nv.code !== 0) throw fail('other', `npm version patch 실패${nv.timedOut ? '(시간 초과)' : ''}: ${nv.error ?? outText(nv.output)}`);
+    const v = readVersions(repo);
+    if (v.packageJson !== plan.newVersion || v.lockTop !== plan.newVersion || v.lockRoot !== plan.newVersion) {
+      throw fail('version', `npm version 뒤 버전이 ${plan.newVersion}이 아니다 — package.json ${v.packageJson}, package-lock.json ${v.lockTop} (packages[""] ${v.lockRoot})`);
+    }
+    // npm run build 와 같은 결과를, 체크아웃 줄바꿈과 상관없이 커밋될 내용으로 (out 은 레포 build/claude-code)
+    const btmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plenum-build-'));
+    try {
+      await copyKitForBuild(repo, path.join(btmp, 'kit'));
+      const b = await run(process.execPath, [bin, '--kit', path.join(btmp, 'kit'), '--out', path.join(repo, 'build', 'claude-code')], { cwd: repo, timeoutMs: COMPILE_MS });
+      if (b.code !== 0) throw compileError(b.stderr, b.stdout);
+    } finally {
+      fs.rmSync(btmp, { recursive: true, force: true });
+    }
+    step('build').state = 'ok';
+
+    // 3. commit — 손댄 경로만
+    begin('commit', 'git commit');
+    if (hooks.beforeCommit) await hooks.beforeCommit();
+    if (!(await unchanged(repo, base, plan.workerFile, plan.newWorkerText, plan.newKitYaml))) throw fail('git', CHANGED);
+    const paths = touchedPaths(plan);
+    const add = await kitGit(repo, ['add', '--', ...paths]);
+    if (add.code !== 0) throw fail('git', `git add 실패: ${outText(add.stderr)}`);
+    const staged = await kitGit(repo, ['diff', '--cached', '--name-only', '-z']);
+    if (staged.code !== 0) throw fail('git', `스테이징 목록을 읽지 못했다: ${outText(staged.stderr)}`);
+    const files = staged.stdout.split('\0').filter(Boolean);
+    const extra = files.filter((f) => !paths.includes(f) && !f.startsWith('build/claude-code/'));
+    if (extra.length) throw fail('git', `예상하지 않은 파일이 스테이징됐다: ${extra.join(', ')}`);
+    if (files.length === 0) throw fail('git', '커밋할 변경이 없다');
+    const c = await kitGit(repo, ['commit', '-q', '-m', plan.commitMessage]);
+    if (c.code !== 0) throw fail('git', `git commit 실패: ${outText(c.stderr || c.stdout)}`);
+    const sha = await headSha(repo);
+    j.commit = { sha, short: sha.slice(0, 7) };
+    wrote = false; // 커밋됐다 — 이제 롤백 대상이 아니다
+    step('commit').state = 'ok';
+    step('commit').detail = `커밋 ${j.commit.short} · 파일 ${files.length}개`;
+
+    // 4. push
+    begin('push', 'origin main');
+    if (hooks.beforePush) await hooks.beforePush();
+    const p = await kitGit(repo, ['push', 'origin', 'main'], 120000);
+    if (p.code !== 0) {
+      const out = `${p.stderr}\n${p.stdout}`;
+      const rejected = /\[rejected\]|non-fast-forward|fetch first/.test(out);
+      j.pushError = {
+        kind: rejected ? 'rejected' : 'other',
+        message: rejected ? '원격에 새 커밋이 있어서 push가 거부됐다 — 받아와서 다시 push 하거나 커밋을 취소한다' : `push 실패: ${outText(out)}`,
+      };
+      step('push').state = 'fail';
+      j.status = 'push-failed';
+      return;
+    }
+    step('push').state = 'ok';
+    j.status = 'done';
+  } catch (e: any) {
+    const err: SaveError = e instanceof StepFail ? e.err : { kind: 'other', message: `예상하지 못한 오류: ${e && e.message ? e.message : String(e)}` };
+    if (wrote && plan) {
+      const left = await rollback(repo, plan, kitYamlStart);
+      if (left) err.message += ` (되돌린 뒤에도 남은 변경: ${left})`;
+      else err.message += ' — 레포는 저장 전으로 되돌렸다';
+    }
+    step(current).state = 'fail';
+    for (const s of j.steps) if (s.state === 'wait') s.state = 'skip';
+    j.error = err;
+    j.status = 'failed';
+  }
+}
+
+function touchedPaths(plan: SavePlan): string[] {
+  return [plan.workerFile, 'kit/kit.yaml', 'package.json', 'package-lock.json', 'build/claude-code'];
+}
+
+// 손댄 경로만 HEAD 로 되돌린다. kit.yaml 은 저장 시작 때 사용자 변경이 있었으면 그 내용으로(사용자 편집을 잃지 않게).
+// 남은 변경이 있으면 그 목록, 없으면 null (kit.yaml 사용자 변경은 원래 있던 것이라 남은 변경으로 치지 않는다)
+async function rollback(repo: string, plan: SavePlan, kitYamlStart: string | null): Promise<string | null> {
+  const paths = touchedPaths(plan);
+  await kitGit(repo, ['reset', '-q', '--', ...paths]);
+  await kitGit(repo, ['checkout', 'HEAD', '--', ...paths]);
+  await kitGit(repo, ['clean', '-fdq', '--', 'build/claude-code']);
+  if (kitYamlStart !== null) {
+    try { fs.writeFileSync(path.join(repo, 'kit', 'kit.yaml'), kitYamlStart); } catch (e: any) { return `kit/kit.yaml을 저장 전 내용으로 되돌리지 못했다: ${e.message}`; }
+  }
+  try {
+    const left = (await porcelain(repo)).filter((l) => !(kitYamlStart !== null && l.slice(3) === 'kit/kit.yaml'));
+    return left.length ? left.join(', ') : null;
+  } catch (e: any) { return e.message; }
+}
+
+function needPushFailed(repo: string, what: string): SaveJob {
+  if (running || busy) throw new UserError(409, '저장이 진행 중이다');
+  if (!job || job.status !== 'push-failed') throw new UserError(409, `${what}는 push가 실패한 저장에서만 할 수 있다`);
+  if (jobRepo !== repo) throw new UserError(409, 'push가 실패한 저장의 kit 레포가 지금 설정과 다르다');
+  if (!job.commit || !job.baseSha) throw new UserError(409, '되돌릴 커밋 정보가 없다');
+  return job;
+}
+
+// push 가 실패로 보였지만 원격이 이미 우리 커밋을 받았으면 되돌리지 않고 끝난 저장으로 친다.
+// true = 원격에 있음(job 을 done 으로 바꿨다). 원격을 확인하지 못하면 409
+const ALREADY = 'push가 실패로 보였지만 원격에 이미 올라가 있다';
+async function alreadyPushed(repo: string, j: SaveJob, what: string): Promise<boolean> {
+  const r = await commitOnRemote(repo, j.commit!.sha);
+  if (!r.ok) throw new UserError(409, r.message);
+  if (!r.onRemote) return false;
+  const push = j.steps.find((s) => s.key === 'push')!;
+  push.state = 'ok';
+  push.detail = '원격에 이미 있음';
+  j.pushError = null;
+  j.status = 'done';
+  j.notice = `${ALREADY} — ${what}`;
+  return true;
+}
+
+// 받아와서 다시 push: 우리 커밋을 되돌리고 → 원격을 받고 → 같은 입력으로 처음부터 (버전은 새 base 기준 +1)
+export async function retrySave(repo: string, opts: { hooks?: SaveHooks } = {}): Promise<SaveJob> {
+  const j = needPushFailed(repo, '다시 push');
+  busy = true;
+  try {
+    return await retryLocked(repo, j, opts);
+  } finally { busy = false; }
+}
+
+async function retryLocked(repo: string, j: SaveJob, opts: { hooks?: SaveHooks }): Promise<SaveJob> {
+  if (await alreadyPushed(repo, j, '다시 push하지 않았다')) return snapshot(j);
+  const undo = await undoOwnCommit(repo, j.commit!.sha, j.baseSha!);
+  if (!undo.ok) throw new UserError(409, undo.message);
+  j.commit = null;
+  const st = await remoteStatus(repo, { fetch: true });
+  if (st.state === 'behind') {
+    const pull = await pullFastForward(repo);
+    if (!pull.ok) {
+      j.status = 'failed';
+      j.error = { kind: 'git', message: `커밋은 되돌렸지만 받아오지 못했다: ${pull.message}` };
+      return snapshot(j);
+    }
+  }
+  busy = false;
+  return startSave(repo, { worker: j.worker, model: j.model, effort: j.effort }, opts);
+}
+
+// 커밋 취소: 우리 커밋을 되돌리고 끝
+export async function cancelSave(repo: string): Promise<SaveJob> {
+  const j = needPushFailed(repo, '커밋 취소');
+  busy = true;
+  try {
+    if (await alreadyPushed(repo, j, '취소하지 않았다')) return snapshot(j);
+    const undo = await undoOwnCommit(repo, j.commit!.sha, j.baseSha!);
+    if (!undo.ok) throw new UserError(409, undo.message);
+    j.status = 'cancelled';
+    return snapshot(j);
+  } finally { busy = false; }
+}

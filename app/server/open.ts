@@ -37,17 +37,65 @@ export function resolveCommand(name: string, env: NodeJS.ProcessEnv = process.en
 // Windows: .cmd·.bat 는 셸 없이 못 부른다 → cmd.exe /d /s /c "<한 줄>". /s 는 맨 앞·맨 뒤 따옴표 한 쌍만 벗긴다.
 // verbatim(windowsVerbatimArguments)이 없으면 Node가 안쪽 따옴표를 \" 로 바꿔서 cmd가 이상한 줄을 받는다.
 // .exe 는 cmd 없이 바로 부른다. Windows 경로엔 " 가 못 들어가서 따옴표로 감싸면 공백·한글이 안전하다. % 는 cmd가 변수로 펼쳐서 거부.
-export function editorCommand(editor: string, dir: string, platform = process.platform, env: NodeJS.ProcessEnv = process.env, isFile = isFileOnDisk): Command {
+// 절대 경로로 찾은 프로그램 + 인자 → 실행할 명령. 에디터·npm·claude 공용.
+// Windows .cmd·.bat 만 cmd.exe 를 거치고 인자마다 따옴표로 감싼다. 나머지(.exe, POSIX)는 그대로 부른다.
+export function commandFor(resolved: string, args: string[], platform = process.platform, labels: string[] = []): Command {
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(resolved)) {
+    const parts = [resolved, ...args];
+    parts.forEach((s, i) => {
+      if (/["%\r\n]/.test(s)) throw new Error(`${labels[i] || (i === 0 ? '명령' : '인자')}에 cmd가 해석하는 문자(" % 줄바꿈)가 있어서 실행할 수 없다: ${s}`);
+    });
+    return { cmd: 'cmd.exe', args: ['/d', '/s', '/c', `"${parts.map((s) => `"${s}"`).join(' ')}"`], verbatim: true };
+  }
+  return { cmd: resolved, args };
+}
+
+// line 을 주면 VS Code(code)일 때만 -g <파일>:<줄> 로 그 줄을 연다. 다른 에디터는 파일만 연다.
+export function isVsCode(editor: string): boolean {
+  return /^code(\.(cmd|exe))?$/i.test(path.basename(editor.replace(/\\/g, '/')));
+}
+
+export function editorCommand(editor: string, dir: string, platform = process.platform, env: NodeJS.ProcessEnv = process.env, isFile = isFileOnDisk, line?: number): Command {
   const resolved = resolveCommand(editor, env, platform, isFile);
   if (!resolved) throw new Error(`에디터 명령 "${editor}"를 PATH에서 못 찾았다. 설정 › 일반에 전체 경로(예: VS Code의 bin\\code.cmd)를 넣을 수 있다`);
-  if (platform === 'win32') {
-    for (const [what, s] of [['경로', dir], ['에디터 명령', resolved]] as const) {
-      if (/["%\r\n]/.test(s)) throw new Error(`${what}에 cmd가 해석하는 문자(" % 줄바꿈)가 있어서 열 수 없다: ${s}`);
+  if (platform === 'win32' && /["%\r\n]/.test(dir)) throw new Error(`경로에 cmd가 해석하는 문자(" % 줄바꿈)가 있어서 열 수 없다: ${dir}`);
+  const args = line && line > 0 && isVsCode(editor) ? ['-g', `${dir}:${line}`] : [dir];
+  return commandFor(resolved, args, platform, ['에디터 명령', ...args.map(() => '경로')]);
+}
+
+// 명령을 끝날 때까지(최대 timeoutMs) 돌려 종료 코드와 출력(stdout+stderr, decodeOutput)을 받는다. 시간이 넘으면 죽이고 timedOut.
+export interface CommandResult { code: number | null; output: string; timedOut: boolean; error?: string }
+export function runCommand(c: Command, opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      // POSIX는 새 프로세스 그룹으로 띄워 시간 초과 때 그룹째(-pid) 죽인다
+      child = spawn(c.cmd, c.args, { cwd: opts.cwd, env: opts.env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, windowsVerbatimArguments: !!c.verbatim, detached: process.platform !== 'win32' });
+    } catch (e: any) {
+      resolve({ code: null, output: '', timedOut: false, error: e.message });
+      return;
     }
-    if (/\.(cmd|bat)$/i.test(resolved)) return { cmd: 'cmd.exe', args: ['/d', '/s', '/c', `""${resolved}" "${dir}""`], verbatim: true };
-    return { cmd: resolved, args: [dir] };
-  }
-  return { cmd: resolved, args: [dir] };
+    const chunks: Buffer[] = [];
+    child.stdout!.on('data', (d: Buffer) => chunks.push(d));
+    child.stderr!.on('data', (d: Buffer) => chunks.push(d));
+    let timedOut = false;
+    let done = false;
+    let grace: NodeJS.Timeout | undefined;
+    const finish = (r: CommandResult) => { if (!done) { done = true; clearTimeout(t); if (grace) clearTimeout(grace); resolve(r); } };
+    // 시간이 넘으면 프로세스 트리째 죽인다(POSIX는 프로세스 그룹). Windows에서 .cmd 는 cmd.exe 가 감싸서 child.kill() 은 cmd.exe 만 죽이고
+    // 그 아래 node 등 손자 프로세스가 남아 출력 파이프를 붙잡는다 → taskkill /T /F. 그래도 파이프가 안 닫히면 2초 뒤 끊고 끝낸다.
+    const t = setTimeout(() => {
+      timedOut = true;
+      if (process.platform === 'win32' && child.pid) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }).on('error', () => child.kill());
+      else { try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); } }
+      grace = setTimeout(() => {
+        child.stdout!.destroy(); child.stderr!.destroy(); child.unref();
+        finish({ code: null, output: decodeOutput(Buffer.concat(chunks)), timedOut });
+      }, 2000);
+    }, opts.timeoutMs ?? 120000);
+    child.once('error', (e) => finish({ code: null, output: decodeOutput(Buffer.concat(chunks)), timedOut, error: `${c.cmd} 실행 실패: ${e.message}` }));
+    child.once('close', (code) => finish({ code, output: decodeOutput(Buffer.concat(chunks)), timedOut }));
+  });
 }
 
 // cmd·Windows 프로그램의 출력은 콘솔 코드페이지(한국어 Windows는 CP949)라 UTF-8로 읽으면 깨진다.
