@@ -6,6 +6,7 @@ import { Home } from './Home';
 import { SettingsPage } from './Settings';
 import { ProjectPage } from './Project';
 import { AddProject } from './AddProject';
+import type { Drafts } from './WorkerEdit';
 
 export function VersionBar({ v }: { v: Versions | null }) {
   if (!v) return <span className="version">버전 확인 중…</span>;
@@ -48,6 +49,21 @@ export function App() {
 
   const onChanged = () => setReload((n) => n + 1);
 
+  // 워커 초안: 브라우저 메모리에만. 하나라도 남아 있으면 새로고침·닫기 때 묻는다
+  const [drafts, setDrafts] = useState<Drafts>({});
+  const unsaved = Object.keys(drafts).length;
+  useEffect(() => {
+    if (unsaved === 0) return;
+    const onBefore = (e: BeforeUnloadEvent) => {
+      const msg = `저장 안 한 변경 ${unsaved}개`; // 브라우저는 이 문구를 안 보여 줄 수 있다
+      e.preventDefault();
+      e.returnValue = msg;
+      return msg;
+    };
+    window.addEventListener('beforeunload', onBefore);
+    return () => window.removeEventListener('beforeunload', onBefore);
+  }, [unsaved]);
+
   return (
     <div className="app">
       {route.page !== 'project' && (
@@ -60,7 +76,7 @@ export function App() {
         </header>
       )}
       {route.page === 'home' && <Home reload={reload} onAdd={() => setAdding(true)} onChanged={onChanged} />}
-      {route.page === 'settings' && <SettingsPage cat={route.cat} onChanged={onChanged} versions={versions} />}
+      {route.page === 'settings' && <SettingsPage cat={route.cat} onChanged={onChanged} versions={versions} refreshVersions={refreshVersions} drafts={drafts} setDrafts={setDrafts} />}
       {route.page === 'project' && <ProjectPage id={route.id} />}
       {adding && <AddProject onClose={() => setAdding(false)} onAdded={() => { setAdding(false); onChanged(); }} />}
     </div>

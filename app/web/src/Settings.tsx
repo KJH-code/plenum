@@ -1,13 +1,18 @@
-import { Fragment, useEffect, useState } from 'react';
-import { api, type KitResult, type Settings, type Versions, type Worker } from './api';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { api, type Settings, type Versions } from './api';
 import { href } from './route';
 import { Back } from './icons';
+import { InstallPanel } from './InstallPanel';
+import { Workers, type Drafts } from './WorkerEdit';
 
 const CATS: [id: string, label: string][] = [
   ['general', '일반'], ['kit', 'kit'], ['workers', '워커'], ['modes', '모드'], ['providers', '모델 · 프로바이더'], ['rules', '규칙'], ['account', '계정 · 한도'],
 ];
 
-export function SettingsPage({ cat, onChanged, versions }: { cat: string; onChanged: () => void; versions: Versions | null }) {
+export function SettingsPage({ cat, onChanged, versions, refreshVersions, drafts, setDrafts }: {
+  cat: string; onChanged: () => void; versions: Versions | null; refreshVersions: () => void;
+  drafts: Drafts; setDrafts: Dispatch<SetStateAction<Drafts>>;
+}) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { api.settings().then(setSettings).catch((e) => setError(e.message)); }, []);
@@ -25,8 +30,8 @@ export function SettingsPage({ cat, onChanged, versions }: { cat: string; onChan
       <main>
         {error && <p className="error">{error}</p>}
         {cat === 'general' && settings && <General s={settings} save={save} />}
-        {cat === 'kit' && settings && <KitSettings s={settings} save={save} v={versions} />}
-        {cat === 'workers' && settings && <Workers kitPath={settings.kitRepoPath} />}
+        {cat === 'kit' && settings && <KitSettings s={settings} save={save} v={versions} refreshVersions={refreshVersions} />}
+        {cat === 'workers' && settings && <Workers kitPath={settings.kitRepoPath} versions={versions} refreshVersions={refreshVersions} drafts={drafts} setDrafts={setDrafts} />}
         {!['general', 'kit', 'workers'].includes(cat) && (
           <>
             <h1>{CATS.find((c) => c[0] === cat)?.[1] ?? cat}</h1>
@@ -69,18 +74,21 @@ function General({ s, save }: { s: Settings; save: (p: Partial<Settings>) => Pro
   );
 }
 
-function KitSettings({ s, save, v }: { s: Settings; save: (p: Partial<Settings>) => Promise<void>; v: Versions | null }) {
+function KitSettings({ s, save, v, refreshVersions }: { s: Settings; save: (p: Partial<Settings>) => Promise<void>; v: Versions | null; refreshVersions: () => void }) {
   return (
     <>
       <h1>kit</h1>
       <PathField label="kit 레포 경로" value={s.kitRepoPath ?? ''} onSave={(val) => save({ kitRepoPath: val })}
         hint="kit 레포를 clone한 폴더의 전체 경로 (kit/kit.yaml 과 build/claude-code/ 가 있어야 한다). owner/repo·상대 경로는 받지 않는다" />
-      {v && <VersionDetail v={v} />}
+      {v && <VersionDetail v={v} refreshVersions={refreshVersions} />}
     </>
   );
 }
 
-function VersionDetail({ v }: { v: Versions }) {
+function VersionDetail({ v, refreshVersions }: { v: Versions; refreshVersions: () => void }) {
+  // 반영을 누른 뒤 같음이 돼도 결과는 보이게: 한 번 version-differs였으면 패널을 남긴다
+  const [showInstall, setShowInstall] = useState(v.status === 'version-differs');
+  useEffect(() => { if (v.status === 'version-differs') setShowInstall(true); }, [v.status]);
   const row = (label: string, side: Versions['source'], problem: string | null) => (
     <div><span>{label}</span>{side
       ? <span className="mono">{side.version} · 파일 {side.files} · 해시 {side.hash ? side.hash.slice(0, 12) : '[없음]'}{side.crFiles > 0 ? ` · CRLF 파일 ${side.crFiles}` : ''}<br />{side.path}</span>
@@ -114,81 +122,8 @@ function VersionDetail({ v }: { v: Versions }) {
         </div>
       )}
       {v.status === 'content-differs' && <p className="hint">버전은 같은데 파일 내용이 다르다. 소스를 고친 뒤 버전을 안 올렸거나, 설치본이 옛 커밋이다.</p>}
-      {v.status === 'version-differs' && <p className="hint">설치본을 소스 버전으로 올리려면: <code>claude plugin marketplace update kjh-code</code> 후 <code>claude plugin update {v.plugin}@kjh-code</code></p>}
+      {v.status === 'version-differs' && <p className="hint">설치본({v.installed?.version ?? '[모름]'})이 소스({v.source?.version ?? '[모름]'})와 다르다. 아래 버튼이 두 명령을 차례로 돌린다.</p>}
+      {showInstall && <InstallPanel plugin={v.plugin} onFinished={refreshVersions} />}
     </section>
-  );
-}
-
-const fmtModes = (w: Worker) => w.modes.length === 0 ? <span className="placeholder">[쓰는 모드 없음]</span>
-  : w.modes.map((m, i) => <Fragment key={`${m.mode}-${m.fallback}`}>{i > 0 && '·'}<span className={m.fallback ? 'fb' : undefined}>{m.fallback ? `${m.mode}(대체)` : m.mode}</span></Fragment>);
-
-export function Workers({ kitPath }: { kitPath: string | null }) {
-  const [kit, setKit] = useState<KitResult | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
-  useEffect(() => { api.workers().then(setKit).catch((e) => setKit({ ok: false, repo: kitPath, message: e.message })); }, [kitPath]);
-
-  if (!kit) return <p className="hint">kit 읽는 중…</p>;
-  if (!kit.ok) {
-    return (
-      <>
-        <h1>워커</h1>
-        <p className="error" role="alert">{kit.message}</p>
-        <p><a href={href.settings('kit')}>설정 › kit에서 kit 레포 경로 지정</a></p>
-      </>
-    );
-  }
-  const groups = kit.stages.map((s) => ({ stage: s, items: kit.workers.filter((w) => w.stage === s) })).filter((g) => g.items.length > 0);
-  return (
-    <>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 12 }}>
-        <h1>워커 ({kit.workers.length})</h1>
-        <span className="hint" style={{ color: 'var(--fg-muted)' }}>kit: {kit.name} {kit.version} · 단계별 · 행을 누르면 펼쳐진다</span>
-      </div>
-      <div className="workers-wrap">
-        <div className="wtable">
-          <table aria-label="워커 목록">
-            <thead><tr><th style={{ width: 36 }}><span className="sr-only">펼치기</span></th><th>이름</th><th>하는 일</th><th>AI</th><th>노력도</th><th>쓰는 모드</th></tr></thead>
-            <tbody>
-              {groups.map((g) => (
-                <Fragment key={g.stage}>
-                  <tr className="group" data-testid="stage-group"><td colSpan={6}>{g.stage} <span className="count">· {g.items.length}</span></td></tr>
-                  {g.items.map((w) => {
-                    const isOpen = open === w.name;
-                    const toggle = () => setOpen(isOpen ? null : w.name);
-                    return (
-                      <Fragment key={w.name}>
-                        <tr className="wrow" data-open={isOpen} onClick={toggle} data-testid="worker-row">
-                          <td><button type="button" className="toggle" aria-expanded={isOpen} aria-label={`${isOpen ? '접기' : '펼치기'}: ${w.name}`} onClick={(e) => { e.stopPropagation(); toggle(); }}>{isOpen ? '▾' : '▸'}</button></td>
-                          <td className="mono">{w.name}</td>
-                          <td className="muted">{w.summary}</td>
-                          <td><span className={`chip ${w.model}`}>{w.model}</span></td>
-                          <td>{w.effort}</td>
-                          <td className="muted">{fmtModes(w)}</td>
-                        </tr>
-                        {isOpen && (
-                          <tr><td colSpan={6} style={{ padding: 0 }}>
-                            <div className="detail" data-testid="worker-detail">
-                              <div><div className="k">AI · 노력도</div>{w.model} · {w.effort}</div>
-                              <div><div className="k">도구</div><span className="mono">{w.tools || '[도구 칸 없음]'}</span></div>
-                              <div><div className="k">최대 턴 · 격리</div>{w.maxTurns ?? '[maxTurns 없음]'} · {w.isolation ?? '없음'}</div>
-                              <div><div className="k">원본 파일</div><span className="mono">{w.file}</span></div>
-                              <div className="wide"><div className="k">description</div>{w.description}</div>
-                            </div>
-                          </td></tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <aside className="side-actions" aria-label="워커 동작">
-          {['외부 에디터로 열기', '빌드', '설치본에 반영', '워커 추가', '복제', '삭제'].map((l) => <button key={l} type="button" className="btn" disabled>{l}</button>)}
-          <span className="hint">편집·빌드는 이후 단계</span>
-        </aside>
-      </div>
-    </>
   );
 }
