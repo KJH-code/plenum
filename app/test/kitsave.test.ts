@@ -488,6 +488,46 @@ describe('저장 중 레포가 바뀜 (검사 뒤·쓰기 전)', () => {
   });
 });
 
+// 빌드 뒤·commit 직전에 사용자가 외부 터미널에서 git pull 한 상황.
+// 다른 clone 은 우리가 손대지 않는 파일(NOTES.md)만 바꿔 push → 이 레포에서 git pull --ff-only 는 우리 작업 트리 변경을 그대로 둔 채 HEAD 만 옮긴다.
+// 워커 파일·kit.yaml 내용은 우리가 쓴 그대로라 HEAD 재확인만이 잡을 수 있다.
+for (const mode of MODES) describe(`저장 중 레포가 바뀜 (빌드 뒤·commit 직전)${mode.name}`, () => {
+  test('외부 터미널 git pull → 커밋하지 않고 실패, 우리 쓰기는 롤백, 레포는 받아온 상태 그대로', async () => {
+    const { kr } = await setup({ autocrlf: mode.crlf });
+    const base = kr.head();
+    let theirs = '';
+    let dirtyAfterPull = '';
+    startSave(kr.repo, { worker: 'impl', model: 'opus', effort: 'xhigh' }, {
+      hooks: {
+        beforeCommit: async () => {
+          const o = kr.other();
+          theirs = kr.commitFile(o, 'NOTES.md', '다른 곳에서\n', '다른 곳의 커밋');
+          git(o, 'push', '-q', 'origin', 'main');
+          git(kr.repo, 'pull', '-q', '--ff-only', 'origin', 'main');
+          dirtyAfterPull = kr.porcelain();
+        },
+      },
+    });
+    const job = await saveSettled();
+    // 받아오기가 실제로 우리 변경을 남긴 채 HEAD 만 옮겼는지 (장면이 맞는지)
+    expect(dirtyAfterPull).toMatch(/kit\/workers\/impl\.md/);
+    expect(job.status, JSON.stringify(job.error)).toBe('failed');
+    expect(job.error).toMatchObject({ kind: 'git', message: expect.stringMatching(/저장하는 동안 kit 레포가 바뀌었다 — 다시 저장 — 레포는 저장 전으로 되돌렸다$/) });
+    expect(job.steps.map((x) => x.state)).toEqual(['warn', 'ok', 'fail', 'skip']);
+    expect(job.commit).toBeNull();
+    expect(theirs).not.toBe(base);
+    expect(kr.head()).toBe(theirs);
+    expect(kr.git('rev-parse', 'HEAD~1').trim()).toBe(base);
+    expect(kr.porcelain()).toBe('');
+    expect(kr.remoteHead()).toBe(theirs);
+    expect(kr.git('log', '--format=%s', `${base}..HEAD`).trim()).toBe('다른 곳의 커밋');
+    expect(fs.readFileSync(path.join(kr.repo, 'NOTES.md'), 'utf8')).toMatch(/^다른 곳에서\r?\n$/);
+    expect(fs.readFileSync(path.join(kr.repo, 'kit', 'workers', 'impl.md'), 'utf8')).toMatch(/^model: sonnet\r?$/m);
+    expect(readVersions(kr.repo)).toEqual({ kitYaml: '0.0.1', packageJson: '0.0.1', lockTop: '0.0.1', lockRoot: '0.0.1' });
+    if (mode.crlf) expectCrlfCheckout(kr);
+  });
+});
+
 describe('push 실패로 보였지만 원격에 이미 있음', () => {
   // 원격이 받았지만 클라이언트는 실패로 본 상황: push 직전에 우리가 먼저 올리고 origin 주소를 끊는다
   async function phantom() {

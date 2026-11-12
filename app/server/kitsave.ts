@@ -25,8 +25,8 @@ export interface SaveJob {
   notice: string | null; // 끝난 뒤 덧붙이는 안내 (예: push 실패로 보였지만 원격에 이미 있음)
 }
 export interface SaveInput { worker: string; model: string; effort: string }
-// 테스트 전용: afterCheck = 검사 뒤·레포에 쓰기 전, beforePush = commit 뒤·push 전
-export interface SaveHooks { afterCheck?: () => Promise<void>; beforePush?: () => Promise<void> }
+// 테스트 전용: afterCheck = 검사 뒤·레포에 쓰기 전, beforeCommit = 빌드 뒤·git commit 직전, beforePush = commit 뒤·push 전
+export interface SaveHooks { afterCheck?: () => Promise<void>; beforeCommit?: () => Promise<void>; beforePush?: () => Promise<void> }
 
 const STEPS: StepKey[] = ['check', 'build', 'commit', 'push'];
 const COMPILE_MS = 120000;
@@ -204,6 +204,7 @@ async function pipeline(repo: string, j: SaveJob, input: SaveInput, hooks: SaveH
 
     // 3. commit — 손댄 경로만
     begin('commit', 'git commit');
+    if (hooks.beforeCommit) await hooks.beforeCommit();
     if (!(await unchanged(repo, base, plan.workerFile, plan.newWorkerText, plan.newKitYaml))) throw fail('git', CHANGED);
     const paths = touchedPaths(plan);
     const add = await kitGit(repo, ['add', '--', ...paths]);
