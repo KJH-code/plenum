@@ -105,7 +105,8 @@ describe('GitHub clone', () => {
     expect(r.body).toMatchObject({ name: 'demo', source: 'github', url: 'https://github.com/test-owner/demo', path: t.body.dest });
     expect(r.body.detection).toMatchObject({ git: 'ok', branch: 'main', hasClaudeMd: true });
     const doc = await srv.call('GET', `/api/projects/${r.body.id}/claude-md`);
-    expect(doc.body.text).toBe('# 데모\n한글 CLAUDE.md\n');
+    // Windows git(core.autocrlf=true)은 clone 때 LF를 CRLF로 바꾼다 — 내용만 비교
+    expect(doc.body.text.replace(/\r\n/g, '\n')).toBe('# 데모\n한글 CLAUDE.md\n');
   });
 
   test('clone할 폴더가 이미 있으면 409, clone 실패는 메시지', async () => {
