@@ -36,4 +36,5 @@ DevVault: Projects/jh-kit
 - 로컬 서버: 127.0.0.1에만, 바꾸는 요청은 `X-Plenum: 1` 헤더 필수, Host 검사, CORS 허용 헤더는 보내지 않는다
 - 사용자가 넣는 경로는 절대 경로만(`server/paths.ts`). 상대 경로는 서버 cwd 기준이 돼서 엉뚱한 곳이 된다
 - 개발 의존성은 lock 파일(npm 11로 생성)로 고정. npm 10에서 lock 없이 `npm install` 하면 vitest 4에서 멈춘다
-- 커밋 메시지는 한국어. 커밋에 모델 이름을 넣지 않는다
+- 커밋 메시지는 한국어. 커밋 본문에 모델 이름을 넣지 않는다. 예외: 끝의 `Co-Authored-By: Claude …` 트레일러
+- 커밋 작성자: author = `KJH-code <248580898+KJH-code@users.noreply.github.com>`, committer = `Claude <noreply@anthropic.com>` (클라우드 세션 SSH 서명이 Verified로 뜬다). `--reset-author`는 쓰지 않는다(프로필 기여에서 빠진다)
