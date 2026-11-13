@@ -127,20 +127,28 @@ export async function procStartTime(pid: number, platform = process.platform): P
 // Linux: /proc/N/cmdline 전체(npm 설치는 node …/claude-code/cli.js). mac: ps comm.
 // Windows: tasklist 이미지 이름. npm 설치 claude.cmd 는 우리가 띄운 pid 가 cmd.exe 라 이름에 claude 가 없다 →
 // cmd.exe 일 때만 PowerShell 로 명령줄을 읽어 claude 가 들어 있는지 본다.
-export async function looksLikeClaude(pid: number, platform = process.platform): Promise<boolean> {
+// Plenum 채팅 claude 의 명령줄인가: 채팅만 쓰는 인자(stream-json 입력 + --permission-prompt-tool stdio)가 있고,
+// Claude 데스크톱 앱(Windows %LOCALAPPDATA%\AnthropicClaude\app-*\claude.exe, macOS Claude.app)이 아니다.
+// 이름만 claude 인 프로세스(데스크톱 앱, 사용자가 터미널에서 띄운 claude)는 고아 정리가 절대 건드리지 않는다(재혁 요구 2026-11-13).
+export function isPlenumChatCommandLine(cl: string): boolean {
+  if (!cl) return false;
+  if (/AnthropicClaude|Claude\.app\/Contents/i.test(cl)) return false;
+  return /--input-format[\s=]+stream-json/.test(cl) && /--permission-prompt-tool[\s=]+stdio/.test(cl);
+}
+
+async function commandLine(pid: number, platform: NodeJS.Platform): Promise<string> {
   if (platform === 'win32') {
-    const out = await run('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH']);
-    const m = /^"([^"]*)","(\d+)"/m.exec(out);
-    if (!m || Number(m[2]) !== pid) return false;
-    if (/claude/i.test(m[1])) return true;
-    if (!/^cmd\.exe$/i.test(m[1])) return false;
-    const cl = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`]);
-    return /claude/i.test(cl);
+    return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`]);
   }
   if (platform === 'linux') {
-    try { return /claude/i.test(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ')); } catch { return false; }
+    try { return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' '); } catch { return ''; }
   }
-  return /claude/i.test(await run('ps', ['-p', String(pid), '-o', 'comm=']));
+  return run('ps', ['-p', String(pid), '-o', 'command=']);
+}
+
+// 고아 정리 직전 마지막 확인: 그 pid 가 지금 Plenum 채팅 claude 명령줄인가(npm 설치 claude.cmd 는 cmd.exe 가 감싸지만 명령줄에 인자가 그대로 있다)
+export async function looksLikeClaude(pid: number, platform = process.platform): Promise<boolean> {
+  return isPlenumChatCommandLine(await commandLine(pid, platform));
 }
 
 // 소유 서버가 살아 있나: pid 가 살아 있고 지금 그 pid 의 시작 시각이 ownerStart 와 같다(±2초).

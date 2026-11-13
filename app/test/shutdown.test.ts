@@ -7,7 +7,8 @@ import path from 'node:path';
 import { expect, it } from 'vitest';
 import { createChatManager } from '../server/chat.ts';
 import { commandFor, resolveCommand } from '../server/open.ts';
-import { addPid, cleanupOrphans, isAlive, procStartTime, readPids } from '../server/proc.ts';
+import { addPid, cleanupOrphans, isAlive, isPlenumChatCommandLine, procStartTime, readPids } from '../server/proc.ts';
+import { chatArgs } from '../server/chat.ts';
 import { makeFakeStreamClaude } from './fakeclaudeStream.ts';
 
 const root = () => fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 테스트-'));
@@ -56,7 +57,7 @@ async function orphanClaude(dir: string) {
   const env = fake.env({ hang: true });
   const resolved = resolveCommand('claude', env)!;
   expect(resolved).toBeTruthy();
-  const c = commandFor(resolved, ['-p'], process.platform);
+  const c = commandFor(resolved, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--permission-prompt-tool', 'stdio'], process.platform); // 진짜 채팅 claude 와 같은 인자(고아 판정이 이 명령줄을 본다)
   const child = spawn(c.cmd, c.args, { env, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true, windowsVerbatimArguments: !!c.verbatim, detached: process.platform !== 'win32' });
   expect(await until(() => fake.hangPids().length === 1)).toBe(true);
   return { child, grand: fake.hangPids()[0][1] };
@@ -269,4 +270,44 @@ it('cleanupOrphans: 마지막 쓰기는 파일을 다시 읽어 이번에 지운
     expect(after.find((e) => e.pid === other2.pid)!.procStart).toBe(123);
     expect(after.find((e) => e.pid === added.pid)).toEqual(added);
   } finally { for (const p of [owner, other1, other2, orphan]) kill(p); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
+});
+
+// 고아 정리는 Plenum 채팅 claude 명령줄만 건드린다 — Claude 데스크톱 앱·터미널 claude 는 이름이 claude 여도 아니다
+it('isPlenumChatCommandLine: 채팅 인자가 있는 claude 만, 데스크톱 앱·터미널 claude 는 아니다', () => {
+  const chat = '-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --permission-mode default';
+  // Windows: winget claude.exe, npm claude.cmd 를 감싼 cmd.exe
+  expect(isPlenumChatCommandLine(`"C:\\Users\\홍길동\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe" ${chat}`)).toBe(true);
+  expect(isPlenumChatCommandLine(`C:\\Windows\\system32\\cmd.exe /d /s /c ""C:\\Users\\홍길동\\AppData\\Roaming\\npm\\claude.cmd" ${chat}"`)).toBe(true);
+  expect(isPlenumChatCommandLine(`/usr/local/bin/node /usr/local/bin/claude ${chat}`)).toBe(true);
+  // Claude 데스크톱 앱 (Windows·macOS) — 인자가 섞여 있어도 아니다
+  expect(isPlenumChatCommandLine('"C:\\Users\\홍길동\\AppData\\Local\\AnthropicClaude\\app-1.2.3\\claude.exe"')).toBe(false);
+  expect(isPlenumChatCommandLine('"C:\\Users\\홍길동\\AppData\\Local\\AnthropicClaude\\app-1.2.3\\claude.exe" --type=renderer --lang=ko')).toBe(false);
+  expect(isPlenumChatCommandLine(`"C:\\Users\\홍길동\\AppData\\Local\\AnthropicClaude\\app-1.2.3\\claude.exe" ${chat}`)).toBe(false);
+  expect(isPlenumChatCommandLine('/Applications/Claude.app/Contents/MacOS/Claude')).toBe(false);
+  // 사용자가 터미널에서 띄운 claude (대화형, 이어하기)
+  expect(isPlenumChatCommandLine('claude.exe')).toBe(false);
+  expect(isPlenumChatCommandLine('claude --resume 11111111-2222-4333-8444-555555555555')).toBe(false);
+  expect(isPlenumChatCommandLine('claude -p "요약해줘"')).toBe(false);
+  expect(isPlenumChatCommandLine('')).toBe(false);
+  // 채팅이 실제로 넘기는 인자가 이 판정을 통과해야 고아가 정리된다 (인자를 바꾸면 여기서 깨진다)
+  expect(isPlenumChatCommandLine(`claude ${chatArgs({ model: 'haiku', resume: '11111111-2222-4333-8444-555555555555' }).join(' ')}`)).toBe(true);
+});
+
+it('cleanupOrphans: 시작 시각·소유 서버 조건이 다 맞아도 채팅 claude 명령줄이 아니면(데스크톱 앱·터미널 claude) 안 죽인다', async () => {
+  const dir = root();
+  const cfgDir = path.join(dir, '설정');
+  // 이름에 claude 가 들어간 실행 파일(데스크톱 앱 흉내)을 채팅 인자 없이 띄운다
+  const appDir = path.join(dir, 'AnthropicClaude', 'app-1.2.3');
+  fs.mkdirSync(appDir, { recursive: true });
+  const script = path.join(appDir, 'claude.js');
+  fs.writeFileSync(script, 'setInterval(() => {}, 1000)');
+  const desktop = spawn(process.execPath, [script, '--type=renderer'], { stdio: 'ignore', detached: process.platform !== 'win32' });
+  const dead = await deadPid();
+  try {
+    await addPid(cfgDir, desktop.pid!, { ownerPid: dead });
+    expect(readPids(cfgDir)[0].procStart).not.toBeNull(); // 시작 시각은 맞는다 — 명령줄만 다르다
+    expect(await cleanupOrphans(cfgDir)).toBe(0);
+    await sleep(300);
+    expect(isAlive(desktop.pid!)).toBe(true);
+  } finally { kill(desktop); }
 });
