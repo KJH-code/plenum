@@ -10,7 +10,7 @@ import { chromium, type Page } from 'playwright';
 import { createHandler, listen } from '../server/app.ts';
 import type { Command } from '../server/open.ts';
 import { makeFakeStreamClaude } from '../test/fakeclaudeStream.ts';
-import { copyHistory, limitScript, REC } from './chatfix.ts';
+import { copyHistory, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
 
 const SERVER_DOWN = 'Plenum 서버가 꺼져 있음 — 터미널에서 다시 켜기';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 채팅-'));
@@ -23,6 +23,9 @@ const env = fake.env({ script: REC('01-cards.jsonl'), extra: { CLAUDE_CONFIG_DIR
 const launched: Command[] = [];
 const PAST = '279fe3c2-3715-4f89-ac82-284e5c2f6842';
 copyHistory(claudeHome, projDir, '-tmp-plenum-rec-----AbCdEf', PAST);
+// 질문 a.txt 답 + rm a.txt 거부가 있는 진짜 기록(b5b49096). 01 녹화 채팅과 세션 ID 가 같아 다른 ID 로 복사한다
+const S01 = 'e01e01e0-5604-499f-a80b-49f35d8d09bb';
+copyHistory(claudeHome, projDir, '-tmp-plenum-rec-----AbCdEg', 'b5b49096-5604-499f-a80b-49f35d8d09bb', S01);
 
 const handler = createHandler({ cfgDir: path.join(root, '설정'), env, claudeHome, launcher: async (c) => { launched.push(c); return { ok: true } as const; } });
 let { server, port } = await listen(handler, 0);
@@ -57,7 +60,9 @@ try {
   await page.getByLabel('노력도', { exact: true }).waitFor(T);
   await page.locator('.new-opts[data-caps=effort]').waitFor(T);
   assert.equal(await page.getByLabel('모델', { exact: true }).inputValue(), '');
-  pass('노력도 드롭다운 보임(--effort 있음), 모델 기본 "Claude Code 설정"');
+  assert.equal(await page.getByLabel('모델', { exact: true }).locator('option').first().innerText(), '기본값');
+  assert.equal(await page.getByLabel('노력도', { exact: true }).locator('option').first().innerText(), '기본값');
+  pass('(c) 노력도 드롭다운 보임(--effort 있음), 모델·노력도 기본 글자 "기본값"');
 
   // ── (1) 01 녹화: 질문 → 허용 → 이 세션 동안 허용 → 거부+이유 ──
   await sendText('시작');
@@ -150,6 +155,17 @@ try {
   assert.ok((await pastBox.innerText()).includes(firstUser.slice(0, 20)), `지난 기록에 첫 질문이 없다: ${firstUser.slice(0, 20)}`);
   pass(`(4) 지난 세션 목록 → 이어하기 → 지난 기록(${transcript.length}줄) 그려짐`);
 
+  // ── (a) 지난 기록의 카드 줄: 접두어가 한 번씩만 ──
+  const row01 = page.locator(`[data-testid=session-row][data-sid="${S01}"]`);
+  await row01.getByRole('button').first().click();
+  await row01.getByRole('button', { name: '이어하기' }).click();
+  await page.getByTestId('past-answered').first().waitFor(T);
+  assert.deepEqual(await page.getByTestId('past-answered').allInnerTexts(), ['답함: a.txt', '거부함: Bash rm a.txt']);
+  pass('(a) 지난 기록 카드 줄 "답함: a.txt"·"거부함: Bash rm a.txt" (접두어 한 번씩)');
+  await row.getByRole('button').first().click();
+  await row.getByRole('button', { name: '이어하기' }).click();
+  await pastBox.waitFor(T);
+
   // ── (5) 터미널로 열기 ──
   await page.locator('.bar-top').getByRole('button', { name: '터미널로 열기' }).click();
   const dlg = page.getByRole('dialog', { name: '터미널로 열기' });
@@ -169,6 +185,58 @@ try {
   assert.equal(await dlg.count(), 0, 'Esc 로 닫히지 않았다');
   pass(`(5) 터미널로 열기 → ${process.platform === 'win32' ? '가짜 launcher 호출' : '수동(붙여 넣기) 안내'}, 확인창에 두 줄, Esc 닫기`);
 
+  // ── (d) 끝난 채팅 → 터미널로 열기(채팅 닫힘) → 훅 SessionStart → 이어 보내기 409 → "이미 닫았다" → 다시 시작 ──
+  const D = 'dddddddd-1111-4222-8333-444444444444';
+  const dScript = path.join(root, 'reply-d.jsonl');
+  replyScript(dScript, D, '첫 답이다');
+  env.FAKE_STREAM_SCRIPT = dScript;
+  await page.getByRole('button', { name: '새 세션' }).click();
+  await sendText('터미널 전');
+  await page.getByTestId('assistant-text').filter({ hasText: '첫 답이다' }).waitFor(T);
+  await status().filter({ hasText: '끝남' }).waitFor(T);
+  await page.locator('.bar-top').getByRole('button', { name: '터미널로 열기' }).click();
+  const dlg2 = page.getByRole('dialog', { name: '터미널로 열기' });
+  await dlg2.getByRole('button', { name: '채팅 끝내고 터미널로' }).click(T);
+  await dlg2.getByTestId('terminal-lines').waitFor(T);
+  await page.keyboard.press('Escape');
+  await page.locator('[data-testid=chat-status][data-state=ended]').waitFor(T);
+  const hook = await fetch(`${base}/api/hook`, { method: 'POST', headers: H, body: JSON.stringify({ event: 'SessionStart', session_id: D, cwd: projDir }) });
+  assert.deepEqual(await hook.json(), { ok: true });
+  replyScript(dScript, D, '다시 시작했다');
+  await sendText('터미널 뒤');
+  const forget = composer().locator('..').getByRole('button', { name: '이미 닫았다' });
+  await forget.waitFor(T);
+  assert.equal(await page.getByLabel('메시지', { exact: true }).inputValue(), '터미널 뒤', '409 뒤 입력창 글이 지워졌다');
+  await forget.click();
+  await page.getByTestId('assistant-text').filter({ hasText: '다시 시작했다' }).waitFor(T);
+  assert.equal(await forget.count(), 0);
+  const act = await (await fetch(`${base}/api/projects/${proj.id}/activity`)).json();
+  assert.equal(act.sessions.some((x: any) => x.sessionId === D && x.source === 'terminal'), false, '이미 닫았다 뒤에도 터미널 세션이 남았다');
+  const args = fake.argsCalls();
+  assert.deepEqual(args[args.length - 1].args.slice(-2), ['--resume', D]);
+  pass('(d) 끝난 채팅에서 터미널(훅)로 열린 세션 이어 보내기 → 409 → "이미 닫았다" → forget-terminal 뒤 --resume 으로 다시 시작');
+
+  // ── (e) 살아 있는 채팅(다른 탭에서 시작) 세션을 목록에서 이어하기 → 서버가 글을 그 채팅에 전달 → 그 채팅 화면 ──
+  const eScript = path.join(root, 'two-turn.jsonl');
+  twoTurnScript(eScript, PAST);
+  env.FAKE_STREAM_SCRIPT = eScript;
+  await row.getByRole('button').first().click();
+  await row.getByRole('button', { name: '이어하기' }).click();
+  await page.getByTestId('past-transcript').waitFor(T);
+  const other = await (await fetch(`${base}/api/projects/${proj.id}/chats`, { method: 'POST', headers: H, body: JSON.stringify({ text: '다른 탭', resume: PAST }) })).json();
+  for (let i = 0; i < 100; i++) {
+    const cs = await (await fetch(`${base}/api/projects/${proj.id}/chats`)).json();
+    if (cs.some((c: any) => c.chatId === other.chat.chatId && c.sessionId === PAST && c.state === 'idle')) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const argsBefore = fake.argsCalls().length;
+  await sendText('이 탭에서 이어');
+  await page.getByTestId('assistant-text').filter({ hasText: '둘째 턴 답' }).waitFor(T);
+  assert.equal(await page.getByTestId('past-transcript').count(), 0, '그 채팅 화면으로 바뀌지 않았다');
+  assert.deepEqual(await page.locator('.bubble').allInnerTexts(), ['다른 탭', '이 탭에서 이어']);
+  assert.equal(fake.argsCalls().length, argsBefore, '살아 있는 채팅이 있는데 claude 를 새로 띄웠다');
+  pass('(e) 살아 있는 채팅 세션을 목록에서 이어하기 → forwarded → 같은 채팅 화면에 글이 감(새 claude 없음)');
+
   // ── 노력도: --effort 없는 claude → 드롭다운 없음 ──
   env.FAKE_CLAUDE_HELP_EFFORT = '0';
   env.FAKE_CLAUDE_VERSION = '2.1.248'; // 기능 캐시는 버전별
@@ -178,6 +246,24 @@ try {
   delete env.FAKE_CLAUDE_HELP_EFFORT;
   delete env.FAKE_CLAUDE_VERSION;
   pass('FAKE_CLAUDE_HELP_EFFORT=0 → 노력도 드롭다운 없음');
+
+  // ── (b) 리셋 시각 없는 rejected → 보내기 켜짐 + 경고 한 줄 ──
+  const lim0 = path.join(root, 'limit-unknown.jsonl');
+  limitScript(lim0, null);
+  env.FAKE_STREAM_SCRIPT = lim0;
+  await page.getByRole('button', { name: '새 세션' }).click();
+  await sendText('한도 모름');
+  const lw = page.getByTestId('limit-warn');
+  await lw.waitFor(T);
+  assert.equal(await lw.innerText(), '사용 한도에 걸렸다는 신호가 왔지만 리셋 시각을 모른다');
+  assert.equal(await page.getByTestId('limit-rejected').count(), 0, '리셋 시각을 모르는데 막힘 안내가 보인다');
+  await page.getByLabel('메시지', { exact: true }).fill('또');
+  assert.equal(await composer().getByRole('button', { name: '보내기' }).isDisabled(), false, '리셋 시각을 모르는데 보내기가 꺼졌다');
+  await composer().getByRole('button', { name: '보내기' }).click();
+  await page.locator('.bubble', { hasText: /^또$/ }).waitFor(T);
+  assert.equal(await page.locator('.composer-wrap .warn-line', { hasText: '리셋 시각을 모른다' }).count(), 1, '경고 줄이 겹친다');
+  assert.equal(await status().filter({ hasText: '한도 초과' }).count(), 0);
+  pass('(b) resetsAt 없는 rejected → 보내기 켜짐·보내짐, 입력창 위 경고 한 줄, 막힘 안내 없음');
 
   // ── (6) 한도 rejected → 보내기 비활성 + 리셋 시각 ──
   const reset = Math.floor(Date.now() / 1000) + 3600;

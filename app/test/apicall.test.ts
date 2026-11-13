@@ -1,6 +1,6 @@
 // 웹 api.ts call(): fetch 자체가 던지면(서버 꺼짐) ServerDownError, 서버가 답한 오류는 서버 문구 그대로.
 import { afterEach, expect, it, vi } from 'vitest';
-import { ApiError, call, SERVER_DOWN, ServerDownError } from '../web/src/api.ts';
+import { api, ApiError, call, SERVER_DOWN, ServerDownError } from '../web/src/api.ts';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -31,4 +31,12 @@ it('JSON 이 아닌 오류 응답은 상태 코드 문구, 성공은 본문', as
   vi.stubGlobal('fetch', f);
   expect(await call<any>('POST', '/y', { a: 1 })).toEqual({ ok: 1 });
   expect((f.mock.calls[0] as any)[1].headers).toEqual({ 'Content-Type': 'application/json', 'X-Plenum': '1' });
+});
+
+it('GET 에도 X-Plenum 헤더 (GET /api/claude/capabilities 는 서버가 요구한다)', async () => {
+  const f = vi.fn(async () => new Response(JSON.stringify({ found: true, version: '2.1.323', effort: true }), { status: 200 }));
+  vi.stubGlobal('fetch', f);
+  await api.caps();
+  expect((f.mock.calls[0] as any)[0]).toBe('/api/claude/capabilities');
+  expect((f.mock.calls[0] as any)[1]).toMatchObject({ method: 'GET', headers: { 'X-Plenum': '1' } });
 });

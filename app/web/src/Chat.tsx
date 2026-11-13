@@ -4,7 +4,7 @@ import {
   type Card, type CardReply, type ChatEvent, type ChatInfo, type ChatState, type Limits, type ModeName, type SessionSummary, type TranscriptItem, type WorkerRun,
 } from './api';
 import { PermissionCard, QuestionCard, UnknownCard, type Resolved } from './Cards';
-import { activeRejection, clock, windowName } from './Limits';
+import { clock, LIMIT_WARN, limitGate, windowName } from './Limits';
 import { Markdown } from './Markdown';
 
 // ── 채팅 이벤트 → 화면 줄 (seq 순서대로 한 번씩 적용) ─────────────
@@ -155,6 +155,12 @@ function Workers({ ids, workers, now }: { ids: string[]; workers: Record<string,
 function Bubble({ text }: { text: string }) { return <div className="bubble">{text}</div>; }
 function ClaudeLabel() { return <div className="claude-label">Claude</div>; }
 
+// 지난 카드 한 줄. 서버가 접두어 없이 summary + outcome 을 준다. outcome 이 없으면(옛 서버) summary 그대로
+export function answeredLabel(it: { summary: string; outcome?: 'answered' | 'denied' }): string {
+  if (!it.outcome) return it.summary;
+  return it.outcome === 'denied' ? `거부함: ${it.summary}` : `답함: ${it.summary}`;
+}
+
 // 지난 기록(읽기 전용)
 function PastItems({ items }: { items: TranscriptItem[] }) {
   const out: ReactNode[] = [];
@@ -165,13 +171,13 @@ function PastItems({ items }: { items: TranscriptItem[] }) {
     prevUser = false;
     if (it.type === 'assistant-text') out.push(<Markdown key={i} text={it.text} />);
     else if (it.type === 'tools') out.push(<details key={i} className="tools"><summary>{summary(it.names)}</summary><div className="tools-body mono">{it.names.join(', ')}</div></details>);
-    else out.push(<span key={i} className="answered">답함: {it.summary}</span>);
+    else out.push(<span key={i} className="answered" data-testid="past-answered">{answeredLabel(it)}</span>);
   });
   return <div className="past" data-testid="past-transcript">{out}</div>;
 }
 
 // ── 채팅 화면 ─────────────────────────────────────────
-export type Target = { kind: 'new'; n: number } | { kind: 'past'; sid: string } | { kind: 'chat'; chatId: string };
+export type Target = { kind: 'new'; n: number } | { kind: 'past'; sid: string } | { kind: 'chat'; chatId: string; draft?: string }; // draft: 입력창에 미리 넣을 글
 export interface ChatProps {
   projectId: string;
   projectPath: string;
@@ -183,6 +189,7 @@ export interface ChatProps {
   onLimits(l: Limits): void;
   onChanged(): void;                                   // 세션 목록·실행 중 채팅을 다시 읽을 때
   onTerminal(sessionId: string): void;
+  onOpenChat(chatId: string, draft?: string): void;   // 다른(살아 있는) 채팅 화면으로 바꾼다
 }
 
 export function Chat(props: ChatProps) {
@@ -193,11 +200,12 @@ export function Chat(props: ChatProps) {
   const rerender = () => setTick((n) => n + 1);
   const [past, setPast] = useState<TranscriptItem[] | null>(null);
   const [pastErr, setPastErr] = useState<string | null>(null);
-  const [text, setText] = useState('');
+  const [text, setText] = useState(target.kind === 'chat' ? target.draft ?? '' : '');
   const [sending, setSending] = useState(false);
   const [warn, setWarn] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [termBlocked, setTermBlocked] = useState<string | null>(null); // 409 로 막힌 보낼 글
+  const [termBlocked, setTermBlocked] = useState<{ text: string; sid: string } | null>(null); // 터미널에서 열려 있어 409 로 막힌 글과 그 세션
+  const [cardBlocked, setCardBlocked] = useState<{ chatId: string; message: string } | null>(null); // 이어할 채팅이 카드 답을 기다려 409
   const [down, setDown] = useState(false);
   const [meta, setMeta] = useState<{ model: string | null; effort: string | null } | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -266,8 +274,10 @@ export function Chat(props: ChatProps) {
   const v = viewRef.current;
   const running = live(v.state);
   const hasWorkersRunning = Object.values(v.workers).some((w) => w.state === 'running');
+  // 한도 규칙(서버와 같은 limitGate): blocked → 보내기 막음, warn → 경고 줄만
+  const gate = limitGate(props.limits, now);
+  const rej = gate.kind === 'blocked' ? gate : null;
   // 시간 표시(워커 경과·한도 리셋)를 1초마다
-  const rej = activeRejection(props.limits, now);
   useEffect(() => {
     if (!hasWorkersRunning && !rej) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -292,6 +302,8 @@ export function Chat(props: ChatProps) {
   async function start(body: string, resume: string | null) {
     const opts = cbRef.current.newOptions();
     const r = await api.startChat(projectId, { text: body, ...opts, ...(resume ? { resume } : {}) });
+    // 이어할 세션이 이미 살아 있는 채팅이면 서버가 글을 그 채팅에 보냈다 → 그 채팅 화면으로
+    if (r.forwarded) { cbRef.current.onChanged(); cbRef.current.onOpenChat(r.chat.chatId); return; }
     // 같은 세션을 다시 시작해도 앞 줄은 그대로 둔다
     const old = viewRef.current;
     viewRef.current = { ...emptyView(), items: old.items, workers: old.workers, mode: old.mode, sessionId: old.sessionId, gen: old.gen + 1 };
@@ -304,29 +316,34 @@ export function Chat(props: ChatProps) {
   async function send(body = text) {
     const t = body.trim();
     if (!t || sending) return;
-    setSending(true); setErr(null); setWarn([]); setTermBlocked(null);
+    setSending(true); setErr(null); setWarn([]); setTermBlocked(null); setCardBlocked(null);
+    // 새 세션, 이어하기, 끝난 채팅을 같은 세션으로 다시 — 이어할 세션 ID
+    const resume = chatId ? v.sessionId : resumeSid;
     try {
       if (chatId && v.state !== 'ended') {
         const r = await api.send(chatId, t);
         setWarn(r.warnings);
       } else {
-        // 새 세션, 이어하기, 끝난 채팅을 같은 세션으로 다시
-        const resume = chatId ? v.sessionId : resumeSid;
         await start(t, resume);
       }
       setText('');
     } catch (e: any) {
-      if (e instanceof ApiError && e.status === 409 && !chatId && resumeSid) setTermBlocked(t);
-      else setErr(e.message);
+      const sid = resumeSid ?? v.sessionId;
+      if (e instanceof ApiError && e.status === 409 && sid && (!chatId || v.state === 'ended')) {
+        // 이어하기 409 는 둘 중 하나: 그 세션의 살아 있는 채팅이 카드 답을 기다림, 또는 터미널에서 열려 있음
+        const liveChat = await api.chats(projectId).then((cs) => cs.find((c) => c.sessionId === sid && c.state !== 'ended') ?? null).catch(() => null);
+        if (liveChat) setCardBlocked({ chatId: liveChat.chatId, message: e.message });
+        else setTermBlocked({ text: t, sid });
+      } else setErr(e.message);
     } finally { setSending(false); }
   }
 
   async function forgetAndRetry() {
-    if (!resumeSid || !termBlocked) return;
+    if (!termBlocked) return;
     setSending(true); setErr(null);
     try {
-      await api.forgetTerminal(projectId, resumeSid);
-      await start(termBlocked, resumeSid);
+      await api.forgetTerminal(projectId, termBlocked.sid);
+      await start(termBlocked.text, termBlocked.sid);
       setTermBlocked(null); setText('');
     } catch (e: any) { setErr(e.message); } finally { setSending(false); }
   }
@@ -363,8 +380,8 @@ export function Chat(props: ChatProps) {
       <div className="bar-top">
         <span className="chat-title" data-testid="chat-title">{title}</span>
         <span className="badge" data-testid="mode-badge">모드: {mode ?? '—'}</span>
-        {(chatId || resumeSid) && <span className="hint muted" data-testid="chat-model">메인 {mainModel ?? 'Claude Code 설정'}{mainEffort ? ` · ${mainEffort}` : ''}</span>}
-        {status && <span className={`badge ${status.cls}`} data-testid="chat-status">{status.text}</span>}
+        {(chatId || resumeSid) && <span className="hint muted" data-testid="chat-model">메인 {mainModel ?? '기본값'}{mainEffort ? ` · ${mainEffort}` : ''}</span>}
+        {status && <span className={`badge ${status.cls}`} data-testid="chat-status" data-state={v.state ?? ''}>{status.text}</span>}
         <div className="spacer" />
         {openTerm && <button type="button" className="btn small" onClick={openTerm}>터미널로 열기</button>}
       </div>
@@ -386,11 +403,18 @@ export function Chat(props: ChatProps) {
         </div>
       </div>
       <div className="composer-wrap">
-        {warn.map((w, i) => <p key={i} className="warn-line" role="alert">{w}</p>)}
+        {gate.kind === 'warn' && <p className="warn-line" role="alert" data-testid="limit-warn">{LIMIT_WARN}</p>}
+        {warn.filter((w) => !(gate.kind === 'warn' && w.startsWith(LIMIT_WARN))).map((w, i) => <p key={i} className="warn-line" role="alert">{w}</p>)}
         {termBlocked && (
           <div className="warn-line row-wrap" role="alert">
             <span>이 세션은 터미널에서 열려 있다. 터미널을 닫은 뒤 이어한다.</span>
             <button type="button" className="btn small" disabled={sending} onClick={forgetAndRetry}>이미 닫았다</button>
+          </div>
+        )}
+        {cardBlocked && (
+          <div className="warn-line row-wrap" data-testid="card-blocked">
+            <span>{cardBlocked.message}</span>
+            <button type="button" className="btn small" onClick={() => props.onOpenChat(cardBlocked.chatId, text)}>그 채팅으로 가기</button>
           </div>
         )}
         {err && <p className="error" role="alert">{err}</p>}
