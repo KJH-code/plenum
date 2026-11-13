@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
-import { parseMarkdown, type Block, type Inline } from './markdown';
+import { parseMarkdown, type Block, type Inline } from './mdparse';
 
-// markdown.ts 트리 → React 요소. 글자는 모두 React 가 이스케이프한다(HTML 을 끼워 넣지 않는다)
+// mdparse.ts 트리 → React 요소. 글자는 모두 React 가 이스케이프한다(HTML 을 끼워 넣지 않는다)
 function inlines(ns: Inline[]): ReactNode[] {
   return ns.map((n, i) => {
     switch (n.t) {

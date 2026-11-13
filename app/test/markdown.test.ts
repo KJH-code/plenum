@@ -1,6 +1,6 @@
-// 채팅 마크다운 파서 (web/src/markdown.ts). HTML·위험한 링크는 글자로만 나와야 한다.
+// 채팅 마크다운 파서 (web/src/mdparse.ts). HTML·위험한 링크는 글자로만 나와야 한다.
 import { describe, expect, it } from 'vitest';
-import { parseInline, parseMarkdown, type Block, type Inline } from '../web/src/markdown.ts';
+import { parseInline, parseMarkdown, type Block, type Inline } from '../web/src/mdparse.ts';
 
 // 트리 안의 모든 노드 종류
 function kinds(bs: Block[]): string[] {

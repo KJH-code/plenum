@@ -16,7 +16,7 @@ DevVault: Projects/jh-kit
 - `compiler/lib/` — `kit.js`(kit 읽기·모델), `claude-code.js`(타깃 컴파일러·검증), `render.js`(토큰), `prose.js`(산문 경고)
 - `compiler/test/` — fixture kit(`fixtures/kit`)으로 도는 컴파일러·pack 테스트
 - `app/server/` — `node:http` 서버. config(설정·목록), git(감지·clone), projects, kit(워커: 컴파일러의 `loadKit` 재사용), versions(트리 해시), open(폴더·에디터·외부 명령 실행 `commandFor`·`runCommand`), kitedit(워커 머리말·버전 줄 고치기, 미리보기), kitgit(원격 비교·받아오기·우리 커밋 되돌리기), kitsave(저장 job: 검사→빌드→commit→push), install(설치본 반영). 3단계: chat(`claude -p` stream-json 매니저·카드·SSE `chatRoutes`), proc(트리 종료·`chat-pids.json`), claudecaps(`--effort` 감지), history(지난 세션·기록, `cwd` 대조), activity(작동 중: 훅 + 채팅 이벤트), serverfile(`server.json` 포트), terminal(터미널로 열기), store(`sessions.json`·`limits.json`), pathkey, 공용 타입 `chatTypes.ts`. 모듈 연결은 `app.ts` `createHandler`
-- `app/web/src/` — React. 설정 › 워커 편집은 `WorkerEdit.tsx`, 설치본 반영은 `InstallPanel.tsx`. 세션 화면은 `Project.tsx` + `Chat.tsx`·`Cards.tsx`·`SessionSide.tsx`·`Limits.tsx`·`Markdown.tsx`(`markdown.ts` 파서). `api.ts` `call()`이 서버 꺼짐(`ServerDownError`)을 공통 처리. `theme.css` 색 토큰 접두어 `--bg-*`·`--fg-*`·`--line-*`(대비 테스트가 모든 쌍을 잰다), 해시 라우팅
+- `app/web/src/` — React. 설정 › 워커 편집은 `WorkerEdit.tsx`, 설치본 반영은 `InstallPanel.tsx`. 세션 화면은 `Project.tsx` + `Chat.tsx`·`Cards.tsx`·`SessionSide.tsx`·`Limits.tsx`·`Markdown.tsx`(`mdparse.ts` 파서). `api.ts` `call()`이 서버 꺼짐(`ServerDownError`)을 공통 처리. `theme.css` 색 토큰 접두어 `--bg-*`·`--fg-*`·`--line-*`(대비 테스트가 모든 쌍을 잰다), 해시 라우팅
 - `app/test/` — Vitest, `app/test/fixtures/` — 진짜 claude 녹화(stream)·세션 기록(history), 가짜 claude stream 모드 `fakeclaudeStream.ts`. `app/e2e/screens.ts` — Playwright 스크린샷, `e2e/chat.ts` — 채팅 흐름
 
 ## 명령
