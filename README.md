@@ -59,6 +59,11 @@ cd app && npm run typecheck && npm test && npm run e2e
 
 Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu·windows에서 한글 이름 임시 폴더로 돌린다(`.github/workflows/test.yml`).
 
+## 남은 일 (3단계 리뷰 하, 2026-11-13)
+- 끝난 채팅과 이벤트 버퍼가 서버가 도는 동안 메모리에 계속 남는다 — 개수·시간 상한을 두고 버리기
+- 같은 프로젝트 동시 응답 경고가 아직 init 전(`starting`) 채팅과 훅으로 보이는 터미널 세션을 세지 않는다
+- `main.ts` 의 SIGINT·SIGHUP 연결(그리고 `node --import tsx` 신호 전달)을 자동 테스트로 검사하기(지금은 수동 측정만)
+
 ## 변경 기록
 
 ### 0.3.0

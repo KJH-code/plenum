@@ -139,3 +139,15 @@ export interface ActivityView {
   terminalAlive(sessionId: string): boolean;               // 훅 SessionStart 뒤 SessionEnd 없음(유령 정리 포함)
   forProject(projectPath: string): ActiveSession[];
 }
+
+// 한도 막기 규칙 (서버 send·startNow 와 화면 보내기 버튼이 같이 쓴다 — 재혁 결정 2026-11-13)
+// - rejected 이고 resetsAt 이 미래 → 막는다(리셋 시각 안내)
+// - rejected 인데 resetsAt 을 모름 → 막지 않고 경고만(영원히 막히는 것 방지)
+// - rejected 이고 resetsAt 이 지났음 → 아무것도 안 함(창이 다시 열림)
+export type LimitGate = { kind: 'open' } | { kind: 'blocked'; window: string; resetsAt: number } | { kind: 'warn'; window: string };
+export function limitGate(l: Limits | null | undefined, nowMs: number = Date.now()): LimitGate {
+  const r = l?.rejected;
+  if (!r) return { kind: 'open' };
+  if (r.resetsAt == null) return { kind: 'warn', window: r.window };
+  return r.resetsAt * 1000 > nowMs ? { kind: 'blocked', window: r.window, resetsAt: r.resetsAt } : { kind: 'open' };
+}
