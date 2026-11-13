@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   api, ApiError, ServerDownError, SERVER_DOWN,
-  type Card, type CardReply, type ChatEvent, type ChatInfo, type ChatState, type Limits, type ModeName, type SessionSummary, type TranscriptItem, type WorkerRun,
+  type Card, type CardReply, type ChatConflict, type ChatEvent, type ChatInfo, type ChatState, type Limits, type ModeName, type SessionSummary, type TranscriptItem, type WorkerRun,
 } from './api';
 import { PermissionCard, QuestionCard, UnknownCard, type Resolved } from './Cards';
 import { clock, LIMIT_WARN, limitGate, windowName } from './Limits';
@@ -176,6 +176,23 @@ function PastItems({ items }: { items: TranscriptItem[] }) {
   return <div className="past" data-testid="past-transcript">{out}</div>;
 }
 
+// ── 409 분기: 서버가 준 reason 으로만 고른다 ─────────────────
+// awaiting-card → 그 채팅으로 가기(본문 chatId), terminal-open → "이미 닫았다", chat-ended·그 밖 → 오류 문구.
+// 409 가 아니면 null(부른 쪽이 오류 문구만 보인다)
+export type ConflictAction =
+  | { kind: 'go-chat'; chatId: string; message: string }
+  | { kind: 'terminal'; sid: string }
+  | { kind: 'ended'; message: string }
+  | { kind: 'error'; message: string };
+export function conflictAction(e: unknown, sid: string | null): ConflictAction | null {
+  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  const reason = e.reason as ChatConflict | null;
+  if (reason === 'awaiting-card' && e.chatId) return { kind: 'go-chat', chatId: e.chatId, message: e.message };
+  if (reason === 'terminal-open' && sid) return { kind: 'terminal', sid };
+  if (reason === 'chat-ended') return { kind: 'ended', message: e.message };
+  return { kind: 'error', message: e.message };
+}
+
 // ── 채팅 화면 ─────────────────────────────────────────
 export type Target = { kind: 'new'; n: number } | { kind: 'past'; sid: string } | { kind: 'chat'; chatId: string; draft?: string }; // draft: 입력창에 미리 넣을 글
 export interface ChatProps {
@@ -328,13 +345,11 @@ export function Chat(props: ChatProps) {
       }
       setText('');
     } catch (e: any) {
-      const sid = resumeSid ?? v.sessionId;
-      if (e instanceof ApiError && e.status === 409 && sid && (!chatId || v.state === 'ended')) {
-        // 이어하기 409 는 둘 중 하나: 그 세션의 살아 있는 채팅이 카드 답을 기다림, 또는 터미널에서 열려 있음
-        const liveChat = await api.chats(projectId).then((cs) => cs.find((c) => c.sessionId === sid && c.state !== 'ended') ?? null).catch(() => null);
-        if (liveChat) setCardBlocked({ chatId: liveChat.chatId, message: e.message });
-        else setTermBlocked({ text: t, sid });
-      } else setErr(e.message);
+      // 409 는 서버가 준 reason 으로만 가른다(목록을 다시 읽으면 그사이 바뀐 상태와 경쟁한다). 입력 글은 그대로 둔다
+      const a = conflictAction(e, resume ?? null);
+      if (a?.kind === 'go-chat') setCardBlocked({ chatId: a.chatId, message: a.message });
+      else if (a?.kind === 'terminal') setTermBlocked({ text: t, sid: a.sid });
+      else setErr(e.message);
     } finally { setSending(false); }
   }
 

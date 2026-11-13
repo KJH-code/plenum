@@ -249,7 +249,7 @@ export function createHandler(opts: ServerOptions = {}) {
       else throw new UserError(405, '허용하지 않는 메서드');
     } catch (e: any) {
       if (res.headersSent) { res.end(); return; }
-      if (e instanceof UserError) send(res, e.status, { error: e.message });
+      if (e instanceof UserError) send(res, e.status, { error: e.message, ...(e.reason ? { reason: e.reason, ...e.extra } : {}) });
       else send(res, 500, { error: `서버 오류: ${e && e.message ? e.message : String(e)}` });
     }
   };

@@ -143,3 +143,31 @@ it('cleanupOrphans: 시작 시각이 기록과 다르면(pid 재사용) 또는 �
     expect(readPids(cfgDir)).toEqual([]);
   } finally { kill(orphan); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
 });
+
+// Windows 에서 PowerShell 이 시작 시각을 못 읽는 경우(null) 흉내: 읽기 함수만 바꾸고 나머지 조건(소유 서버 없음, claude)은 같다
+it('cleanupOrphans: 시작 시각을 못 읽으면(null) 소유 서버가 없고 claude 여도 안 죽인다, 같은 값을 읽으면 죽인다(대조군)', async () => {
+  const dir = root();
+  const cfgDir = path.join(dir, '설정');
+  const { child: orphan, grand } = await orphanClaude(dir);
+  const dead = await deadPid();
+  try {
+    await addPid(cfgDir, orphan.pid!, { ownerPid: dead });
+    const recorded = readPids(cfgDir)[0].procStart;
+    expect(recorded).not.toBeNull();
+    const asked: number[] = [];
+    expect(await cleanupOrphans(cfgDir, process.platform, async (pid) => { asked.push(pid); return null; })).toBe(0);
+    expect(asked).toEqual([orphan.pid]); // 읽기까지 갔다(앞 조건에서 빠진 게 아님)
+    await sleep(300);
+    expect(isAlive(orphan.pid!)).toBe(true);
+    expect(isAlive(grand)).toBe(true);
+    expect(readPids(cfgDir)).toEqual([]); // 지금 코드: 소유 서버가 없는 항목은 안 죽여도 지운다
+
+    // 대조군: 같은 항목, 읽기 함수만 기록과 같은 값
+    await addPid(cfgDir, orphan.pid!, { ownerPid: dead });
+    rewrite(cfgDir, (e) => ({ ...e, procStart: recorded }));
+    expect(await cleanupOrphans(cfgDir, process.platform, async () => recorded)).toBe(1);
+    expect(await gone(orphan.pid!)).toBe(true);
+    expect(await gone(grand)).toBe(true);
+    expect(readPids(cfgDir)).toEqual([]);
+  } finally { kill(orphan); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
+});

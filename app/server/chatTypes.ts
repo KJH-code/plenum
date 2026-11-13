@@ -51,6 +51,8 @@ export type CardReply =
 
 // ── 채팅 이벤트 (SSE, seq 는 채팅마다 1부터) ─────────────────
 export type ChatState = 'starting' | 'running' | 'waiting' | 'idle' | 'ended';
+// 채팅 409 의 이유 (오류 본문 reason). awaiting-card 본문에는 그 살아 있는 채팅의 chatId 도 온다
+export type ChatConflict = 'awaiting-card' | 'terminal-open' | 'chat-ended' | 'card-answered';
 export type ChatEvent = { seq: number; at: number } & (
   | { type: 'init'; sessionId: string; version: string | null; model: string | null; permissionMode: string | null }
   | { type: 'user'; text: string }
