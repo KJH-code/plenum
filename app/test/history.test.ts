@@ -67,7 +67,7 @@ describe('listSessions — 진짜 기록', () => {
     expect(by[S76d6]).toMatchObject({ startedAt: '2026-11-13T02:03:16.344Z', lastAt: '2026-11-13T02:03:22.072Z', messages: 2 });
     // 9b9b276d: 2줄 <command-message> 로 시작하는 스킬 호출(빼지 않음), 3줄은 isMeta. 글 id 1(67줄)
     expect(by[S9b9b]).toMatchObject({ startedAt: '2026-11-13T02:03:48.997Z', lastAt: '2026-11-13T02:04:06.248Z', messages: 2 });
-    expect(by[S9b9b].title.startsWith('<command-message>jh-kit:start</command-message> <command-name>')).toBe(true);
+    expect(by[S9b9b].title).toBe('/jh-kit:start 테스트용 빈 레포 확인만'); // 태그 대신 "/이름 인자"
   });
 
   it('AbCdEg: 01 세션 하나', async () => {
