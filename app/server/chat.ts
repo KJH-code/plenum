@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import {
   MIN_CLAUDE_VERSION, modeFromAnswer, modeFromSkill,
-  type Card, type CardReply, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
+  type Card, type CardReply, type ChatConflict, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
   type ModeName, type Question, type SessionRule, type WorkerRun, limitGate,
 } from './chatTypes.ts';
 import { claudeCaps, type ClaudeCaps } from './claudecaps.ts';
@@ -53,6 +53,11 @@ const CONCURRENT = '같은 프로젝트에서 응답 중인 세션이 있다 —
 const SHUTDOWN_CAP_MS = 10000;
 export const LIMIT_UNKNOWN_RESET = '사용 한도에 걸렸다는 신호가 왔지만 리셋 시각을 모른다 — 보내기는 막지 않는다';
 const CARD_PENDING = '답을 기다리는 카드가 있다 — 그 채팅에서 먼저 답하기';
+// 409 이유(화면이 이것으로 분기한다)
+const AWAITING_CARD: ChatConflict = 'awaiting-card';
+const TERMINAL_OPEN: ChatConflict = 'terminal-open';
+const ENDED: ChatConflict = 'chat-ended';
+const CARD_ANSWERED: ChatConflict = 'card-answered';
 
 // "2.1.248" 비교. 숫자가 아닌 꼬리는 버린다
 export function compareVersion(a: string, b: string): number {
@@ -215,7 +220,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   }
   function write(c: Chat, msg: unknown) {
     const s = c.child.stdin;
-    if (!s || !s.writable || c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다');
+    if (!s || !s.writable || c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다', ENDED);
     s.write(JSON.stringify(msg) + '\n');
   }
   function pendingCount(c: Chat) { let n = 0; for (const p of c.cards.values()) if (!p.resolved) n++; return n; }
@@ -423,10 +428,10 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       // 이미 살아 있는 채팅이면 새로 띄우지 않고 글을 그 채팅에 보낸다(카드가 답을 기다리면 보내지 않음)
       const live = liveBySession(resume);
       if (live) {
-        if (pendingCount(live)) throw new UserError(409, CARD_PENDING);
+        if (pendingCount(live)) throw new UserError(409, CARD_PENDING, AWAITING_CARD, { chatId: live.info.chatId });
         return { ...send(live.info.chatId, text), forwarded: true };
       }
-      if (deps.terminalAlive(resume)) throw new UserError(409, '이 세션은 터미널에서 열려 있다 — 터미널을 닫고 다시');
+      if (deps.terminalAlive(resume)) throw new UserError(409, '이 세션은 터미널에서 열려 있다 — 터미널을 닫고 다시', TERMINAL_OPEN);
     }
     const limitWarnings = gate();
     const resolved = resolveCommand('claude', env, platform);
@@ -495,8 +500,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     if (!isObj(reply) || typeof reply.requestId !== 'string') throw new UserError(400, 'requestId 가 없다');
     const p = c.cards.get(reply.requestId);
     if (!p) throw new UserError(404, '없는 카드');
-    if (p.resolved) throw new UserError(409, '이미 답한 카드');
-    if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다');
+    if (p.resolved) throw new UserError(409, '이미 답한 카드', CARD_ANSWERED);
+    if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다', ENDED);
     const card = p.card;
     let response: Record<string, unknown>;
     let outcome: 'allow' | 'allow-session' | 'deny' | 'answered';
@@ -552,7 +557,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   function send(chatId: string, text: string) {
     const c = must(chatId);
     if (typeof text !== 'string' || !text.trim()) throw new UserError(400, '보낼 글이 비어 있다');
-    if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다 — 새로 시작하거나 이어하기');
+    if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다 — 새로 시작하거나 이어하기', ENDED);
     const limitWarnings = gate();
     sendUser(c, text);
     setState(c, pendingCount(c) ? 'waiting' : 'running');

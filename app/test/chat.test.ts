@@ -504,6 +504,47 @@ describe('라우트', () => {
       await srv.close();
     }
   });
+
+  it('409 본문 reason: awaiting-card(chatId 포함)·terminal-open·card-answered·chat-ended, 채팅 밖 409 는 reason 없음', async () => {
+    const s = setup();
+    const sid = 'b5b49096-5604-499f-a80b-49f35d8d09bb';
+    const term = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const file = path.join(s.root, 'waiting.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', sid) },
+      { dir: 'out', msg: { type: 'control_request', request_id: 'r-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' }, permission_suggestions: [] } } },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'r-1' } } }, { dir: 'exit', code: 0 }]);
+    const env = s.fake.env({ script: file });
+    const chats = manager(s, env, { terminalAlive: (x) => x === term });
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
+    try {
+      const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+      const dup = await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path });
+      expect(dup.status).toBe(409);
+      expect(Object.keys(dup.body)).toEqual(['error']);
+      const chatId = (await srv.call('POST', `/api/projects/${pid}/chats`, { text: '처음' })).body.chat.chatId;
+      await waitEvent(chats, chatId, 'card');
+
+      const busy = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '버려지면 안 되는 글', resume: sid });
+      expect(busy.status).toBe(409);
+      expect(busy.body).toEqual({ error: expect.stringContaining('답을 기다리는 카드가 있다'), reason: 'awaiting-card', chatId });
+
+      const t = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '이어', resume: term });
+      expect(t.status).toBe(409);
+      expect(t.body).toEqual({ error: expect.stringContaining('터미널'), reason: 'terminal-open' });
+
+      expect((await srv.call('POST', `/api/chats/${chatId}/respond`, { requestId: 'r-1', action: 'allow' })).status).toBe(200);
+      const again = await srv.call('POST', `/api/chats/${chatId}/respond`, { requestId: 'r-1', action: 'allow' });
+      expect(again.status).toBe(409);
+      expect(again.body).toEqual({ error: '이미 답한 카드', reason: 'card-answered' });
+
+      expect((await srv.call('POST', `/api/chats/${chatId}/close`)).status).toBe(200);
+      const ended = await srv.call('POST', `/api/chats/${chatId}/send`, { text: 'x' });
+      expect(ended.status).toBe(409);
+      expect(ended.body).toEqual({ error: expect.stringContaining('채팅이 끝났다'), reason: 'chat-ended' });
+    } finally {
+      await srv.close();
+    }
+  });
 });
 
 describe('끝난 채팅·훅 (지난 세션 running, 작동 중)', () => {

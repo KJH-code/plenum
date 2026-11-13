@@ -137,14 +137,18 @@ export async function looksLikeClaude(pid: number, platform = process.platform):
 // - 소유 서버가 살아 있으면 건너뛰고 항목도 남긴다(그 서버의 채팅)
 // - 소유 서버가 없으면: 지금 시작 시각이 기록과 같고(±2초) claude 일 때만 트리째 종료. 시작 시각을 못 읽거나
 //   기록이 없으면 죽이지 않는다(pid 재사용으로 남의 프로세스를 죽이지 않게). 이 항목들은 파일에서 지운다
-export async function cleanupOrphans(cfgDir: string, platform = process.platform): Promise<number> {
+// startTime 은 테스트가 바꾼다(Windows PowerShell 이 시작 시각을 못 읽는 경우 흉내)
+export async function cleanupOrphans(
+  cfgDir: string, platform = process.platform,
+  startTime: (pid: number, platform: NodeJS.Platform) => Promise<number | null> = procStartTime,
+): Promise<number> {
   const list = readPids(cfgDir);
   const keep: PidEntry[] = [];
   let n = 0;
   for (const e of list) {
     if (e.ownerPid !== null && e.ownerPid !== process.pid && isAlive(e.ownerPid)) { keep.push(e); continue; }
     if (e.pid === process.pid || !isAlive(e.pid) || e.procStart === null) continue;
-    const now = await procStartTime(e.pid, platform);
+    const now = await startTime(e.pid, platform);
     if (now === null || Math.abs(now - e.procStart) > START_SLACK_MS) continue;
     if (!(await looksLikeClaude(e.pid, platform))) continue;
     await killTree(e.pid, platform);

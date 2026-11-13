@@ -77,7 +77,13 @@ export class ServerDownError extends Error {
 export class ApiError extends Error {
   status: number;
   data: any;
-  constructor(message: string, status: number, data: any) { super(message); this.name = 'ApiError'; this.status = status; this.data = data; }
+  reason: string | null;  // 서버가 준 기계용 이유(채팅 409 는 ChatConflict)
+  chatId: string | null;  // awaiting-card 일 때 그 살아 있는 채팅
+  constructor(message: string, status: number, data: any) {
+    super(message); this.name = 'ApiError'; this.status = status; this.data = data;
+    this.reason = data && typeof data.reason === 'string' ? data.reason : null;
+    this.chatId = data && typeof data.chatId === 'string' ? data.chatId : null;
+  }
 }
 
 export async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
