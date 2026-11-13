@@ -21,6 +21,8 @@ import { absolutePath, checkCloneDir, checkKitRepo } from './paths.ts';
 import { createActivity } from './activity.ts';
 import { handleActivity } from './activityRoutes.ts';
 import type { ChatRegistry } from './chatTypes.ts';
+import { createChatManager, type ChatDeps, type ChatManager } from './chat.ts';
+import { handleChat } from './chatRoutes.ts';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
@@ -29,8 +31,9 @@ export interface ServerOptions {
   cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher;
   claudeHome?: string;                                         // 세션 기록 폴더(없으면 CLAUDE_CONFIG_DIR 또는 ~/.claude)
   runningOf?(sessionId: string): 'chat' | 'terminal' | null;   // 지난 세션 목록의 running
-  chats?: ChatRegistry;                                // 채팅 모듈(없으면 채팅 쪽 현황·훅 중복 방지 없음)
   workerModel?: (agentType: string) => string | null;  // 훅 agent_type → 모델. 없으면 kit 레포 워커 정의에서 읽는다
+  chats?: ChatManager;                 // 채팅 매니저(main.ts 가 만들어 넣어 종료 때 정리). 없으면 여기서 만든다
+  chatDeps?: Partial<ChatDeps>;        // chats 를 여기서 만들 때 쓸 연결(테스트·다른 단위)
 }
 
 // 3단계 라우트 모듈이 받는 것. 각 모듈은 `async function handleXxx(ctx: RouteCtx): Promise<boolean>`(처리했으면 true)
@@ -84,19 +87,32 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   fs.createReadStream(file).pipe(res);
 }
 
-// "jh-kit:w-implement" 또는 "w-implement" → kit 워커 정의의 model. 못 읽으면 null
-function kitWorkerModel(repo: string | null, agentType: string): string | null {
-  const k = readKit(repo);
-  if (!k.ok) return null;
-  const name = agentType.replace(/^[^:]+:/, '');
-  return k.workers.find((w) => w.name === name)?.model ?? null;
+// 채팅 워커 이벤트에 붙일 모델: kit 레포 워커 정의(subagent_type 의 "플러그인:" 앞머리는 뗀다)
+export function workerModel(cfgDir: string, subagentType: string): string | null {
+  try {
+    const k = readKit(loadConfig(cfgDir).kitRepoPath);
+    if (!k.ok) return null;
+    const name = subagentType.replace(/^[^:]+:/, '');
+    return k.workers.find((w) => w.name === name)?.model ?? null;
+  } catch { return null; }
 }
 
 export function createHandler(opts: ServerOptions = {}) {
   const cfgDir = opts.cfgDir ?? configDir(opts.env);
   const env = opts.env ?? process.env;
   const launcher = opts.launcher ?? launch;
-  const activity = createActivity({ cfgDir, chats: opts.chats, workerModel: opts.workerModel ?? ((t) => kitWorkerModel(loadConfig(cfgDir).kitRepoPath, t)) });
+  // 모듈 연결: 채팅 ↔ 작동 중(터미널에서 열린 세션은 채팅 이어하기를 막고, 채팅 세션 훅은 작동 중이 무시) ↔ 지난 세션(running)
+  const kitModel = opts.workerModel ?? ((t: string) => workerModel(cfgDir, t));
+  let activityRef: ReturnType<typeof createActivity> | null = null;
+  const chats = opts.chats ?? createChatManager({ cfgDir, env, deps: { workerModel: kitModel, terminalAlive: (sid) => activityRef?.terminalAlive(sid) ?? false, ...opts.chatDeps } });
+  const activity = createActivity({ cfgDir, chats, workerModel: kitModel });
+  activityRef = activity;
+  // 작동 중 칸은 채팅을 프로젝트 경로로 묶는다 — 채팅 init 때 그 채팅의 프로젝트 경로를 알려 준다
+  chats.onEvent((chat, ev) => {
+    if (ev.type !== 'init') return;
+    try { activity.registerChatProject(chat.chatId, findProject(loadConfig(cfgDir), chat.projectId).path); } catch { /* 지워진 프로젝트 */ }
+  });
+  const runningOf = opts.runningOf ?? ((sid: string) => (chats.findBySession(sid) ? 'chat' as const : activity.terminalAlive(sid) ? 'terminal' as const : null));
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, parts: string[]) {
     const method = req.method || 'GET';
@@ -211,13 +227,14 @@ export function createHandler(opts: ServerOptions = {}) {
     }
     // ── 3단계 라우트 (단위마다 한 줄: if (await handleXxx(ctx)) return;) ──
     const ctx: RouteCtx = { req, res, method, parts, cfg, cfgDir, env, body: () => readBody(req), send: (status, body) => send(res, status, body) };
-    if (await handleHistory(ctx, { claudeHome: opts.claudeHome, runningOf: opts.runningOf })) return;
-    if (await handleActivity(ctx, { activity, chats: opts.chats, launcher })) return;
+    if (await handleHistory(ctx, { claudeHome: opts.claudeHome, runningOf })) return;
+    if (await handleActivity(ctx, { activity, chats, launcher })) return;
+    if (await handleChat(ctx, chats)) return;
     // ── 3단계 라우트 끝 ──
     throw new UserError(404, `없는 API: ${method} /api/${parts.join('/')}`);
   }
 
-  return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+  const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       if (!hostAllowed(req.headers.host)) throw new UserError(403, 'Host가 127.0.0.1·localhost가 아니다');
       const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -232,6 +249,8 @@ export function createHandler(opts: ServerOptions = {}) {
       else send(res, 500, { error: `서버 오류: ${e && e.message ? e.message : String(e)}` });
     }
   };
+  // main.ts 가 끌 때 채팅을 정리하려고 매니저를 꺼내 쓴다
+  return Object.assign(handler, { chats, activity });
 }
 
 // 4317부터 빈 포트를 찾는다 (최대 20칸).

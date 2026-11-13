@@ -1,0 +1,470 @@
+// 채팅 매니저·라우트: 진짜 claude 녹화(fixtures/stream)를 가짜 claude 로 재생한다.
+// 가짜 claude 는 PATH 이름으로 찾는다(fakeclaudeStream.ts). 임시 폴더는 한글·공백 이름.
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { chatArgs, createChatManager, type ChatManager } from '../server/chat.ts';
+import type { Card, ChatEvent } from '../server/chatTypes.ts';
+import { readLimits, readSessions } from '../server/store.ts';
+import { makeFakeStreamClaude, writeScript, type FakeStreamClaude } from './fakeclaudeStream.ts';
+import { APP, inProcess } from './helpers.ts';
+
+const REC = path.join(APP, 'test', 'fixtures', 'stream');
+const rec = (name: string) => path.join(REC, name);
+
+interface Setup { root: string; cfgDir: string; project: { id: string; path: string }; fake: FakeStreamClaude }
+function setup(): Setup {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 테스트-'));
+  const projDir = path.join(root, '내 프로젝트');
+  fs.mkdirSync(projDir);
+  return { root, cfgDir: path.join(root, '설정'), project: { id: 'p1', path: projDir }, fake: makeFakeStreamClaude(path.join(root, '가짜')) };
+}
+
+const managers: ChatManager[] = [];
+afterEach(async () => { await Promise.all(managers.splice(0).map((m) => m.shutdownAll())); });
+
+function manager(s: Setup, env: NodeJS.ProcessEnv, deps: Parameters<typeof createChatManager>[0]['deps'] = {}) {
+  const m = createChatManager({ cfgDir: s.cfgDir, env, deps, closeWaitMs: 3000 });
+  managers.push(m);
+  return m;
+}
+
+// 조건에 맞는 이벤트를 기다린다 (after 보다 뒤 seq)
+function waitEvent<T extends ChatEvent['type']>(m: ChatManager, chatId: string, type: T, pred: (e: Extract<ChatEvent, { type: T }>) => boolean = () => true, after = 0, ms = 15000): Promise<Extract<ChatEvent, { type: T }>> {
+  return new Promise((resolve, reject) => {
+    let off = () => {};
+    const t = setTimeout(() => { off(); reject(new Error(`${type} 이벤트가 ${ms}ms 안에 안 왔다`)); }, ms);
+    let done = false;
+    off = m.subscribe(chatId, after, (e) => {
+      if (done || e.type !== type || !pred(e as any)) return;
+      done = true;
+      clearTimeout(t);
+      queueMicrotask(() => off());
+      resolve(e as any);
+    });
+  });
+}
+function events(m: ChatManager, chatId: string): ChatEvent[] {
+  const out: ChatEvent[] = [];
+  m.subscribe(chatId, 0, (e) => out.push(e))();
+  return out;
+}
+const nextCard = async (m: ChatManager, chatId: string, after: number) => (await waitEvent(m, chatId, 'card', () => true, after));
+
+describe('녹화 재생', () => {
+  it('01 카드: 질문 답·허용·이 세션 동안 허용(addRules 만)·거부 이유, 한도', async () => {
+    const s = setup();
+    const m = manager(s, s.fake.env({ script: rec('01-cards.jsonl'), extra: { CLAUDE_CODE_SESSION_ID: 'outer', CLAUDE_CODE_REMOTE_SESSION_ID: 'outer2' } }));
+    const { chat, warnings } = await m.start(s.project, { text: '시작', model: 'haiku', effort: 'low' });
+    expect(warnings).toEqual([]);
+    const id = chat.chatId;
+
+    const q = await nextCard(m, id, 0);
+    const qc = q.card as Extract<Card, { kind: 'question' }>;
+    expect(qc.kind).toBe('question');
+    expect(qc.isModeQuestion).toBe(false);
+    expect(qc.questions[0].options.map((o) => [o.label, o.recommended])).toEqual([['a.txt (Recommended)', true], ['b.txt', false]]);
+    expect(m.get(id)!.state).toBe('waiting');
+    m.respond(id, { requestId: qc.requestId, action: 'answer', answers: { 'Which file name?': 'a.txt (Recommended)' } });
+    await expect(Promise.resolve().then(() => m.respond(id, { requestId: qc.requestId, action: 'allow' }))).rejects.toMatchObject({ status: 409 });
+
+    const p1 = await nextCard(m, id, q.seq);
+    const pc1 = p1.card as Extract<Card, { kind: 'permission' }>;
+    expect(pc1.kind).toBe('permission');
+    expect(pc1.toolName).toBe('Bash');
+    expect(pc1.sessionRules).toEqual([{ toolName: 'Bash', ruleContent: 'touch a.txt' }]);
+    m.respond(id, { requestId: pc1.requestId, action: 'allow' });
+
+    const p2 = await nextCard(m, id, p1.seq);
+    const pc2 = p2.card as Extract<Card, { kind: 'permission' }>;
+    expect(pc2.sessionRules).toEqual([{ toolName: 'Bash', ruleContent: 'touch c.txt' }]);
+    m.respond(id, { requestId: pc2.requestId, action: 'allow-session' });
+
+    const p3 = await nextCard(m, id, p2.seq);
+    const pc3 = p3.card as Extract<Card, { kind: 'permission' }>;
+    expect((pc3.input as any).command).toBe('rm a.txt');
+    m.respond(id, { requestId: pc3.requestId, action: 'deny', reason: '  삭제는 내가 직접 할게 ' });
+
+    const r = await waitEvent(m, id, 'result');
+    expect(r.subtype).toBe('success');
+    await waitEvent(m, id, 'state', (e) => e.state === 'idle', r.seq);
+
+    // stdin 으로 간 것
+    const sent = s.fake.stdin();
+    expect(sent[0]).toEqual({ type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } });
+    expect(sent[1]).toEqual({ type: 'user', message: { role: 'user', content: '시작' } });
+    const resp = (rid: string) => sent.find((x) => x.type === 'control_response' && x.response.request_id === rid).response;
+    expect(resp(qc.requestId).subtype).toBe('success');
+    expect(resp(qc.requestId).response.updatedInput.answers).toEqual({ 'Which file name?': 'a.txt (Recommended)' });
+    expect(resp(qc.requestId).response.updatedInput.questions[0].question).toBe('Which file name?');
+    expect(resp(pc1.requestId).response).toEqual({ behavior: 'allow', updatedInput: { command: 'touch a.txt', description: 'Create a.txt' } });
+    const ss = resp(pc2.requestId).response;
+    expect(ss.updatedPermissions).toEqual([{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch c.txt' }], behavior: 'allow', destination: 'session' }]);
+    expect(JSON.stringify(ss)).not.toMatch(/setMode|addDirectories/);
+    expect(resp(pc3.requestId).response).toEqual({ behavior: 'deny', message: '삭제는 내가 직접 할게' });
+
+    // 한도: pct 4·28, limits.json
+    const lim = events(m, id).filter((e) => e.type === 'limits');
+    expect(lim.length).toBeGreaterThan(0);
+    const l0 = (lim[0] as any).limits;
+    expect([l0.fiveHour.pct, l0.sevenDay.pct]).toEqual([4, 28]);
+    expect(l0.rejected).toBeNull();
+    expect(readLimits(s.cfgDir)!.sevenDay!.pct).toBe(28);
+    expect(m.getLimits()!.fiveHour!.pct).toBe(4);
+
+    // init → sessions.json
+    const init = events(m, id).find((e) => e.type === 'init') as any;
+    expect(init.sessionId).toBe('b5b49096-5604-499f-a80b-49f35d8d09bb');
+    expect(init.version).toBe('2.1.323');
+    expect(readSessions(s.cfgDir)[init.sessionId]).toMatchObject({ version: '2.1.323', plenum: true, projectId: 'p1' });
+    expect(m.findBySession(init.sessionId)!.chatId).toBe(id);
+    expect(m.isPlenumChat(init.sessionId)).toBe(true);
+    expect(events(m, id).some((e) => e.type === 'notice' && e.code === 'version-old')).toBe(false);
+
+    // 인자·cwd·env
+    const call = s.fake.argsCalls()[0];
+    expect(call.args).toEqual(chatArgs({ model: 'haiku', effort: 'low' }));
+    expect(call.args).not.toContain('--bare');
+    expect(fs.realpathSync(call.cwd)).toBe(fs.realpathSync(s.project.path));
+    expect(call.sessionEnv).toEqual([null, null]);
+
+    await m.close(id);
+    expect(m.get(id)!.state).toBe('ended');
+    expect(events(m, id).some((e) => e.type === 'exit')).toBe(true);
+    expect(m.isPlenumChat(init.sessionId)).toBe(false);
+    expect(fs.readFileSync(path.join(s.cfgDir, 'chat-pids.json'), 'utf8').trim()).toBe('[]');
+  });
+
+  it('03 모드: 모드 질문 → "모드 없음" 답 → mode 이벤트 + sessions.json, Edit diff', async () => {
+    const s = setup();
+    const m = manager(s, s.fake.env({ script: rec('03-mode.jsonl') }));
+    const id = (await m.start(s.project, { text: 'README 첫 줄' })).chat.chatId;
+    const q = await nextCard(m, id, 0);
+    const qc = q.card as Extract<Card, { kind: 'question' }>;
+    expect(qc.isModeQuestion).toBe(true);
+    expect(qc.questions[0].header).toBe('모드');
+    expect(qc.questions[0].options[0].recommended).toBe(true);
+    m.respond(id, { requestId: qc.requestId, action: 'answer', answers: { [qc.questions[0].question]: '모드 없음 (추천)' } });
+    const mode = await waitEvent(m, id, 'mode');
+    expect(mode.mode).toBe('모드 없음');
+    const sid = m.get(id)!.sessionId!;
+    expect(readSessions(s.cfgDir)[sid].mode).toBe('모드 없음');
+    expect(m.get(id)!.mode).toBe('모드 없음');
+
+    const e = await nextCard(m, id, q.seq);
+    const ec = e.card as Extract<Card, { kind: 'permission' }>;
+    expect(ec.toolName).toBe('Edit');
+    expect(ec.sessionRules).toEqual([]); // setMode 만 제안됨 → 버림
+    expect(ec.diff).toEqual({ path: '/tmp/plenum-rec-홍길동-AbCdEf/README.md', old: '# fake\n', new: '# fake project\n' });
+    await expect(Promise.resolve().then(() => m.respond(id, { requestId: ec.requestId, action: 'allow-session' }))).rejects.toMatchObject({ status: 400 });
+    m.respond(id, { requestId: ec.requestId, action: 'allow' });
+    await waitEvent(m, id, 'result');
+  });
+
+  it('04 워커: 전경·백그라운드 2개, id = tool_use_id, 둘 다 done', async () => {
+    const s = setup();
+    const m = manager(s, s.fake.env({ script: rec('04-agents.jsonl') }), { workerModel: (t) => (t === 'general-purpose' ? 'haiku' : null) });
+    const id = (await m.start(s.project, { text: '워커' })).chat.chatId;
+    await waitEvent(m, id, 'result');
+    const ws = events(m, id).filter((e) => e.type === 'worker').map((e: any) => e.worker);
+    const ids = [...new Set(ws.map((w) => w.id))].sort();
+    expect(ids).toEqual(['toolu_018TDrrbjFUKLDvbbkGyqZJx', 'toolu_018k3aiCWTvXZA1jg2tTdEde']);
+    const last = (wid: string) => ws.filter((w) => w.id === wid).at(-1);
+    expect(last('toolu_018k3aiCWTvXZA1jg2tTdEde')).toMatchObject({ worker: 'general-purpose', model: 'haiku', description: 'count files', background: false, state: 'done' });
+    expect(last('toolu_018TDrrbjFUKLDvbbkGyqZJx')).toMatchObject({ description: 'say hi', background: true, state: 'done' });
+    expect(last('toolu_018TDrrbjFUKLDvbbkGyqZJx').endedAt).toBeTypeOf('number');
+    // 끝 이벤트는 워커마다 한 번
+    expect(ws.filter((w) => w.state === 'done')).toHaveLength(2);
+    // 하위 에이전트 도구는 parentToolUseId 가 붙는다
+    const tools = events(m, id).filter((e) => e.type === 'tool') as any[];
+    expect(tools.some((t) => t.parentToolUseId === 'toolu_018k3aiCWTvXZA1jg2tTdEde')).toBe(true);
+    expect(tools.filter((t) => t.name === 'Agent').every((t) => t.parentToolUseId === null)).toBe(true);
+  });
+
+  it('05 interrupt: control_request interrupt → result error_during_execution → idle, 닫으면 ended', async () => {
+    const s = setup();
+    const m = manager(s, s.fake.env({ script: rec('05-interrupt.jsonl') }));
+    const id = (await m.start(s.project, { text: '길게' })).chat.chatId;
+    await waitEvent(m, id, 'init');
+    m.interrupt(id);
+    const r = await waitEvent(m, id, 'result');
+    expect(r).toMatchObject({ subtype: 'error_during_execution', isError: true });
+    await waitEvent(m, id, 'state', (e) => e.state === 'idle');
+    expect(s.fake.stdin().find((x) => x.type === 'control_request' && x.request.subtype === 'interrupt')).toEqual({ type: 'control_request', request_id: 'int-1', request: { subtype: 'interrupt' } });
+    await m.close(id);
+    expect(m.get(id)!.state).toBe('ended');
+    expect(events(m, id).find((e) => e.type === 'exit')).toMatchObject({ code: 1 });
+  });
+
+  it('응답 중에 닫으면 interrupt 먼저 보내고 끝난다', async () => {
+    const s = setup();
+    const m = manager(s, s.fake.env({ script: rec('05-interrupt.jsonl') }));
+    const id = (await m.start(s.project, { text: '길게' })).chat.chatId;
+    await waitEvent(m, id, 'init');
+    expect(m.get(id)!.state).toBe('running');
+    const t0 = Date.now();
+    await m.close(id);
+    expect(Date.now() - t0).toBeLessThan(2500); // closeWaitMs(3000)까지 안 기다림
+    expect(m.get(id)!.state).toBe('ended');
+    expect(s.fake.stdin().some((x) => x.type === 'control_request' && x.request.subtype === 'interrupt')).toBe(true);
+    await expect(Promise.resolve().then(() => m.send(id, '또'))).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+const INIT = (version: string, sid = '11111111-2222-3333-4444-555555555555') => ({ type: 'system', subtype: 'init', session_id: sid, claude_code_version: version, model: 'claude-haiku-5-5', permissionMode: 'default' });
+const RESULT = { type: 'result', subtype: 'success', is_error: false, result: '끝', permission_denials: [] };
+const HELLO = [{ dir: 'in', msg: { type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } } }, { dir: 'in', msg: { type: 'user' } }] as const;
+
+describe('합성 대본', () => {
+  it('모르는 control_request → stdin 에 error 응답 + unknown 카드 + notice', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'unknown.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') },
+      { dir: 'out', msg: { type: 'control_request', request_id: 'el-1', request: { subtype: 'elicit_something', foo: 1 } } },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'el-1' } } },
+      { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
+    const c = await waitEvent(m, id, 'card');
+    expect(c.card).toEqual({ kind: 'unknown', requestId: 'el-1', subtype: 'elicit_something', version: '2.1.323' });
+    await waitEvent(m, id, 'result');
+    expect(events(m, id).some((e) => e.type === 'notice' && e.code === 'unknown-request')).toBe(true);
+    expect(s.fake.stdin().find((x) => x.type === 'control_response')).toEqual({ type: 'control_response', response: { subtype: 'error', request_id: 'el-1', error: 'Plenum 채팅이 처리하지 못하는 요청' } });
+    await expect(Promise.resolve().then(() => m.respond(id, { requestId: 'el-1', action: 'allow' }))).rejects.toMatchObject({ status: 409 });
+    await expect(Promise.resolve().then(() => m.respond(id, { requestId: 'nope', action: 'allow' }))).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('한도 rejected → send 429, 리셋이 지났으면 보낸다', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'limit.jsonl');
+    const reset = Math.floor(Date.now() / 1000) + 3600;
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') },
+      { dir: 'out', msg: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: reset, rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: reset, status: 'rejected' } } } } },
+      { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
+    const l = await waitEvent(m, id, 'limits');
+    expect(l.limits.rejected).toEqual({ window: 'five_hour', resetsAt: reset });
+    expect(l.limits.fiveHour!.pct).toBe(100);
+    expect(l.limits.sevenDay).toBeUndefined();
+    await waitEvent(m, id, 'result');
+    let err: any;
+    try { m.send(id, '또'); } catch (e) { err = e; }
+    expect(err.status).toBe(429);
+    expect(err.message).toContain(new Date(reset * 1000).toISOString());
+    // 파일에서 읽은 마지막 값으로 시작하는 새 매니저도 막는다
+    const m2 = manager(s, s.fake.env());
+    expect(m2.getLimits()!.rejected!.resetsAt).toBe(reset);
+  });
+
+  it('버전 2.1.200 → version-old notice (경고만)', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'old.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.200') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
+    const n = await waitEvent(m, id, 'notice', (e) => e.code === 'version-old');
+    expect(n.level).toBe('warn');
+    await waitEvent(m, id, 'result');
+    // 2.1.248 은 경고 없음
+    const file2 = path.join(s.root, 'ok.jsonl');
+    writeScript(file2, [...HELLO, { dir: 'out', msg: INIT('2.1.248') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m2 = manager(s, s.fake.env({ script: file2 }));
+    const id2 = (await m2.start({ id: 'p2', path: s.project.path }, { text: '안녕' })).chat.chatId;
+    await waitEvent(m2, id2, 'result');
+    expect(events(m2, id2).some((e) => e.type === 'notice' && e.code === 'version-old')).toBe(false);
+  });
+
+  it('같은 프로젝트에서 응답 중인 채팅이 있으면 warnings 1개 (막지 않음)', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'busy.jsonl');
+    // init 뒤 다음 user 를 기다리며 running 으로 머문다
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const a = await m.start(s.project, { text: '하나' });
+    expect(a.warnings).toEqual([]);
+    await waitEvent(m, a.chat.chatId, 'init');
+    expect(m.get(a.chat.chatId)!.state).toBe('running');
+    const b = await m.start(s.project, { text: '둘' });
+    expect(b.warnings).toHaveLength(1);
+    expect(b.warnings[0]).toContain('같은 프로젝트');
+    expect(events(m, b.chat.chatId).filter((e) => e.type === 'notice' && e.code === 'concurrent')).toHaveLength(1);
+    // 다른 프로젝트는 경고 없음
+    expect((await m.start({ id: 'p2', path: s.project.path }, { text: '셋' })).warnings).toEqual([]);
+    // send 도 같다 (b 가 running 이 된 뒤)
+    await waitEvent(m, b.chat.chatId, 'init');
+    expect(m.send(a.chat.chatId, '더').warnings).toHaveLength(1);
+    expect(m.list('p1').map((c) => c.chatId).sort()).toEqual([a.chat.chatId, b.chat.chatId].sort());
+  });
+
+  it('resume: 인자 검사, 터미널에서 열려 있으면 409, 이미 도는 채팅이면 그것을 돌려줌', async () => {
+    const s = setup();
+    const sid = 'b5b49096-5604-499f-a80b-49f35d8d09bb';
+    const file = path.join(s.root, 'resume.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', sid) }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
+    const alive = new Set<string>(['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee']);
+    const m = manager(s, s.fake.env({ script: file }), { terminalAlive: (x) => alive.has(x) });
+    const status = async (f: () => Promise<unknown>) => { try { await f(); return 0; } catch (e: any) { return e.status; } };
+    expect(await status(() => m.start(s.project, { text: '이어', resume: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))).toBe(409);
+    expect(await status(() => m.start(s.project, { text: '이어', resume: '../x' }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '이어', model: 'haiku; rm' }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '이어', model: 'x'.repeat(61) }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '이어', effort: 'ultra' }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '   ' }))).toBe(400);
+    expect(s.fake.argsCalls()).toHaveLength(0);
+    const a = await m.start(s.project, { text: '이어', resume: sid, model: 'claude-opus-5-5[1m]', effort: 'max' });
+    expect(a.chat.sessionId).toBe(sid);
+    const b = await m.start(s.project, { text: '또', resume: sid });
+    expect(b.chat.chatId).toBe(a.chat.chatId);
+    await waitEvent(m, a.chat.chatId, 'init');
+    expect(s.fake.argsCalls()).toHaveLength(1);
+    expect(s.fake.argsCalls()[0].args.slice(-6)).toEqual(['--model', 'claude-opus-5-5[1m]', '--effort', 'max', '--resume', sid]);
+  });
+
+  it('PATH 에 claude 가 없으면 400', async () => {
+    const s = setup();
+    const m = manager(s, { ...s.fake.env(), PATH: path.join(s.root, '빈 PATH') });
+    await expect(m.start(s.project, { text: '안녕' })).rejects.toThrow(/PATH/);
+  });
+
+  it('JSON 이 아닌 줄·모르는 type 은 무시한다', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'junk.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: '이건 JSON 객체가 아님' }, { dir: 'out', msg: { type: 'mystery', x: 1 } }, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
+    const r = await waitEvent(m, id, 'result');
+    expect(r.text).toBe('끝');
+  });
+});
+
+// SSE 응답을 count 개 이벤트까지 읽는다
+function readSse(base: string, url: string, count: number): Promise<{ headers: http.IncomingHttpHeaders; events: { id: number; data: any }[] }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(base + url);
+    const req = http.get({ host: u.hostname, port: u.port, path: u.pathname + u.search }, (res) => {
+      let buf = '';
+      const evs: { id: number; data: any }[] = [];
+      const t = setTimeout(() => { req.destroy(); resolve({ headers: res.headers, events: evs }); }, 3000);
+      res.setEncoding('utf8');
+      res.on('data', (d) => {
+        buf += d;
+        let i;
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const id = /^id: (\d+)$/m.exec(block);
+          const data = /^data: (.*)$/m.exec(block);
+          if (id && data) evs.push({ id: Number(id[1]), data: JSON.parse(data[1]) });
+        }
+        if (evs.length >= count) { clearTimeout(t); req.destroy(); resolve({ headers: res.headers, events: evs }); }
+      });
+    });
+    req.on('error', (e: any) => { if (e.code !== 'ECONNRESET') reject(e); });
+  });
+}
+
+describe('라우트', () => {
+  it('POST·GET chats, SSE 재생(after=N, 끝난 text-delta 없음), 헤더, 403·404', async () => {
+    const s = setup();
+    const env = s.fake.env({ script: rec('02-resume.jsonl') });
+    const chats = createChatManager({ cfgDir: s.cfgDir, env, closeWaitMs: 3000 });
+    managers.push(chats);
+    const live: ChatEvent[] = [];
+    chats.onEvent((_c, e) => live.push(e));
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
+    try {
+      const add = await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path });
+      expect(add.status).toBe(201);
+      const pid = add.body.id;
+
+      // X-Plenum 없는 POST 403
+      for (const p of [`/api/projects/${pid}/chats`, '/api/chats/x/send', '/api/chats/x/respond', '/api/chats/x/interrupt', '/api/chats/x/close']) {
+        const r = await fetch(srv.base + p, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"text":"안녕"}' });
+        expect(r.status, p).toBe(403);
+      }
+      expect(s.fake.argsCalls()).toHaveLength(0);
+
+      const st = await srv.call('POST', `/api/projects/${pid}/chats`, { text: 'Which file?', model: 'haiku' });
+      expect(st.status).toBe(201);
+      expect(st.body.warnings).toEqual([]);
+      const chatId = st.body.chat.chatId;
+      expect((await srv.call('GET', `/api/projects/${pid}/chats`)).body.map((c: any) => c.chatId)).toEqual([chatId]);
+      expect((await srv.call('POST', `/api/projects/없음/chats`, { text: 'x' })).status).toBe(404);
+      await waitEvent(chats, chatId, 'state', (e) => e.state === 'idle');
+
+      // 실시간으로는 text-delta 가 왔다
+      const deltas = live.filter((e) => e.type === 'text-delta');
+      expect(deltas.length).toBe(2);
+      const lastSeq = chats.get(chatId)!.lastSeq;
+      const all = await readSse(srv.base, `/api/chats/${chatId}/events?after=0`, lastSeq - deltas.length);
+      expect(all.headers['content-type']).toBe('text/event-stream; charset=utf-8');
+      expect(all.headers['cache-control']).toBe('no-store');
+      expect(Object.keys(all.headers).filter((h) => h.startsWith('access-control-'))).toEqual([]);
+      expect(all.events.some((e) => e.data.type === 'text-delta')).toBe(false);
+      expect(all.events.some((e) => e.data.type === 'assistant-text' && e.data.text === 'a.txt')).toBe(true);
+      expect(all.events.map((e) => e.id)).toEqual(all.events.map((e) => e.data.seq));
+      expect(all.events.at(-1)!.id).toBe(lastSeq);
+
+      const n = all.events[3].id;
+      const tail = await readSse(srv.base, `/api/chats/${chatId}/events?after=${n}`, all.events.length - 4);
+      expect(tail.events.map((e) => e.id)).toEqual(all.events.slice(4).map((e) => e.id));
+      expect(tail.events[0].id).toBeGreaterThan(n);
+
+      // 그 밖 라우트
+      expect((await srv.call('GET', '/api/limits')).body.limits.fiveHour.pct).toBe(4);
+      expect((await srv.call('GET', '/api/chats/없음/events')).status).toBe(404);
+      expect((await srv.call('POST', '/api/chats/없음/send', { text: 'x' })).status).toBe(404);
+      expect((await srv.call('POST', `/api/chats/${chatId}/respond`, { requestId: 'x', action: 'allow' })).status).toBe(404);
+      const sent = await srv.call('POST', `/api/chats/${chatId}/send`, { text: '하나 더' });
+      expect(sent.status).toBe(200);
+      expect(sent.body.ok).toBe(true);
+      expect((await srv.call('POST', `/api/chats/${chatId}/interrupt`)).status).toBe(200);
+      const closed = await srv.call('POST', `/api/chats/${chatId}/close`);
+      expect(closed.status).toBe(200);
+      expect(closed.body.state).toBe('ended');
+      expect((await srv.call('POST', `/api/chats/${chatId}/send`, { text: 'x' })).status).toBe(409);
+      expect((await srv.call('GET', `/api/projects/${pid}/chats`)).body).toEqual([]);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
+describe('--effort 지원 감지', () => {
+  it('도움말에 --effort 가 있으면 effort: true, 같은 경로·버전은 캐시', async () => {
+    const s = setup();
+    const env = s.fake.env({ version: '2.1.300' });
+    const { claudeCaps } = await import('../server/claudecaps.ts');
+    expect(await claudeCaps(env)).toEqual({ found: true, version: '2.1.300', effort: true });
+    // 캐시: 도움말이 바뀌어도 같은 경로·버전이면 다시 묻지 않는다
+    expect(await claudeCaps({ ...env, FAKE_CLAUDE_HELP_EFFORT: '0' })).toEqual({ found: true, version: '2.1.300', effort: true });
+    expect(await claudeCaps({ ...env, PATH: path.join(s.root, '빈 PATH') })).toEqual({ found: false, version: null, effort: false });
+  });
+
+  it('도움말에 --effort 가 없으면 effort: false, effort 를 넣은 start 는 400 (없으면 시작)', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'ok.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.248') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const env = s.fake.env({ script: file, version: '2.1.248', helpEffort: false });
+    const chats = createChatManager({ cfgDir: s.cfgDir, env, closeWaitMs: 3000 });
+    managers.push(chats);
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
+    try {
+      expect((await srv.call('GET', '/api/claude/capabilities')).body).toEqual({ found: true, version: '2.1.248', effort: false });
+      const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+      const bad = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕', effort: 'high' });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error).toContain('--effort 가 없다');
+      expect(s.fake.argsCalls()).toHaveLength(0);
+      const ok = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕', model: 'haiku' });
+      expect(ok.status).toBe(201);
+      await waitEvent(chats, ok.body.chat.chatId, 'result');
+      expect(s.fake.argsCalls()[0].args).not.toContain('--effort');
+    } finally {
+      await srv.close();
+    }
+  });
+});
