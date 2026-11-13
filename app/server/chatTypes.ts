@@ -113,9 +113,24 @@ export interface SessionSummary {
 export type TranscriptItem =
   | { type: 'user'; text: string; at: string | null }
   | { type: 'assistant-text'; text: string; at: string | null }
-  | { type: 'tools'; names: string[]; count: number }                          // 연속된 도구 호출을 한 줄로
+  | { type: 'tools'; names: string[]; count: number;                           // 연속된 도구 호출을 한 줄로
+      labels?: string[] }                                                       // 호출마다 toolLabel(이름 + 명령·파일 등). 있으면 화면이 names 대신 그린다
   | { type: 'answered'; kind: 'question' | 'permission'; summary: string;      // 지난 카드: 접두어 없이 내용만("a.txt", "Bash rm a.txt")
       outcome?: 'answered' | 'denied' };                                        // 화면이 "답함: "·"거부함: " 을 고른다
+
+// 도구 호출 한 줄 요약 ("Bash ls -la", "Read a.ts"). 채팅 화면과 지난 기록(transcript labels)이 같이 쓴다
+const toolBase = (p: string) => p.split(/[\\/]/).pop() || p;
+const toolCut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
+export function toolLabel(name: string, input: unknown): string {
+  const i: Record<string, any> = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  if (typeof i.file_path === 'string') return `${name} ${toolBase(i.file_path)}`;
+  if (name === 'Grep' && typeof i.pattern === 'string') return `${name} "${toolCut(i.pattern, 30)}"`;
+  if (name === 'Glob' && typeof i.pattern === 'string') return `${name} ${toolCut(i.pattern, 30)}`;
+  if (name === 'Bash' && typeof i.command === 'string') return `${name} ${toolCut(i.command, 30)}`;
+  if (name === 'Agent' && typeof i.description === 'string') return `${name} ${toolCut(i.description, 30)}`;
+  if (name === 'Skill' && typeof i.skill === 'string') return `${name} ${i.skill}`;
+  return name;
+}
 
 // ── 실행 중 채팅 목록 ─────────────────────────────────
 // GET /api/projects/:id/chats

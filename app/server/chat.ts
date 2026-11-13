@@ -159,10 +159,17 @@ function sessionRulesFrom(suggestions: unknown): SessionRule[] {
   return out;
 }
 
-// claude 실행 인자 (테스트가 모양을 본다)
-export function chatArgs(o: { model?: string; effort?: string; resume?: string }): string[] {
+// 플러그인 스킬 파일(프로젝트 밖) 읽기는 묻지 않는다. Read 만 — 쓰기·실행은 그대로 카드로 묻는다.
+// claude 2.1.323 으로 확인: 이 규칙이 있으면 그 경로 Read 카드가 안 뜨고, 없으면 뜬다
+export const PLUGIN_CACHE_READ = 'Read(~/.claude/plugins/cache/**)';
+
+// claude 실행 인자 (테스트가 모양을 본다). env 는 CLAUDE_CONFIG_DIR 만 본다
+export function chatArgs(o: { model?: string; effort?: string; resume?: string }, env: NodeJS.ProcessEnv = {}): string[] {
   // --permission-mode default: 사용자 설정의 defaultMode(acceptEdits 등)가 채팅에 새지 않게 명시한다
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio', '--permission-mode', 'default'];
+  // CLAUDE_CONFIG_DIR 이 있으면 플러그인 캐시가 ~/.claude 밖이다. 그 경로를 규칙으로 정확히 쓰는 법(드라이브 문자·한글·공백)을
+  // 확인 못 했으므로 규칙을 붙이지 않는다(카드로 묻는다 — 안전한 쪽)
+  if (!env.CLAUDE_CONFIG_DIR) args.push('--allowedTools', PLUGIN_CACHE_READ);
   if (o.model) args.push('--model', o.model);
   if (o.effort) args.push('--effort', o.effort);
   if (o.resume) args.push('--resume', o.resume);
@@ -445,7 +452,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     const resolved = resolveCommand('claude', env, platform);
     if (!resolved) throw new UserError(400, 'claude 를 PATH 에서 못 찾았다 — Claude Code 를 설치하고 Plenum 을 다시 시작');
     let cmd;
-    try { cmd = commandFor(resolved, chatArgs({ model, effort, resume }), platform); } catch (e: any) { throw new UserError(400, e.message); }
+    try { cmd = commandFor(resolved, chatArgs({ model, effort, resume }, env), platform); } catch (e: any) { throw new UserError(400, e.message); }
     const child = spawn(cmd.cmd, cmd.args, {
       cwd: project.path, env: chatEnv(env), stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true, windowsVerbatimArguments: !!cmd.verbatim, detached: platform !== 'win32',
@@ -528,7 +535,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       }
       case 'deny': {
         const reason = typeof reply.reason === 'string' ? reply.reason.trim() : '';
-        response = { behavior: 'deny', message: reason || '사용자가 거부했다' };
+        // "사용자가" 를 밝힌다 — 그냥 message 만 주면 Claude 가 훅이 막은 것으로 이해했다(노트북 2.1.248)
+        response = { behavior: 'deny', message: reason ? `사용자가 거부함. 이유: ${reason}` : '사용자가 거부함' };
         outcome = 'deny';
         detail = reason || undefined;
         break;

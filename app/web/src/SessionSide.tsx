@@ -1,6 +1,6 @@
 import type { ActiveSession, SessionSummary } from './api';
 import type { ClaudeCaps } from './api';
-import { workerState } from './Chat';
+import { ModelChip, workerState } from './Chat';
 
 export const MODELS = ['', 'opus', 'sonnet', 'haiku'];
 export const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -22,7 +22,6 @@ function meta(s: SessionSummary): string {
   const parts = [s.mode ?? null, s.running ? (s.running === 'terminal' ? '터미널에서 실행 중' : '실행 중') : when(s.lastAt ?? s.startedAt), `메시지 ${s.messages}`];
   return parts.filter(Boolean).join(' · ');
 }
-const modelClass = (m: string | null) => (m && /opus|sonnet|haiku|fable/.exec(m)?.[0]) || '';
 
 export interface SideProps {
   sessions: SessionSummary[] | null;
@@ -99,7 +98,7 @@ export function SessionSide(p: SideProps) {
           <div key={`${s.sessionId}:${w.id}`} className="arow" data-testid="activity-row">
             <span className={`dot ${w.state}`} aria-hidden="true" />
             <span className="mono aname ell">{w.worker.replace(/^[^:]+:/, '') || '[워커]'}</span>
-            {w.model && <span className={`chip ${modelClass(w.model)}`}>{w.model}</span>}
+            <ModelChip model={w.model} />
             <span className="astate">{workerState(w, p.now)}</span>
           </div>
         ))}

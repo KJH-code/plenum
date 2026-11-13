@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { modeFromSkill, type ModeName, type SessionSummary, type TranscriptItem } from './chatTypes.ts';
+import { modeFromSkill, toolLabel, type ModeName, type SessionSummary, type TranscriptItem } from './chatTypes.ts';
 import { UserError } from './errors.ts';
 import { samePath } from './pathkey.ts';
 import { readSessions } from './store.ts';
@@ -53,6 +53,23 @@ function toolUses(j: any): { id: string; name: string; input: any }[] {
   return j.message.content.filter((b: any) => b && b.type === 'tool_use' && typeof b.name === 'string').map((b: any) => ({ id: String(b.id ?? ''), name: b.name, input: b.input }));
 }
 
+// 제목 줄. 2.1.323 녹화는 custom-title(customTitle)·ai-title(aiTitle)·summary(summary).
+// 노트북 2.1.248 의 type 이름은 확인 못 했다 → type 이 위 셋이거나 "title" 이 들어간 줄이면
+// customTitle·aiTitle·title·summary 중 처음 나오는 비지 않은 글자를 쓴다. 사람 메시지(type user)는 안 본다.
+// 종류: customTitle 칸이나 type 에 custom → custom(우선), type summary → summary, 나머지 → ai
+const TITLE_FIELDS = ['customTitle', 'aiTitle', 'title', 'summary'] as const;
+export function titleOf(j: any): { kind: 'customTitle' | 'aiTitle' | 'summary'; text: string } | null {
+  const type = typeof j?.type === 'string' ? j.type : '';
+  if (!(type === 'custom-title' || type === 'ai-title' || type === 'summary' || /title/i.test(type))) return null;
+  for (const f of TITLE_FIELDS) {
+    const v = j[f];
+    if (typeof v !== 'string' || !v.trim()) continue;
+    const kind = f === 'customTitle' || /custom/i.test(type) ? 'customTitle' : type === 'summary' ? 'summary' : 'aiTitle';
+    return { kind, text: v };
+  }
+  return null;
+}
+
 // ── 한 파일 요약 (경로·mtime·크기 기준 캐시) ───────────────
 interface Parsed {
   cwd: string | null;
@@ -79,9 +96,8 @@ async function parseFile(file: string): Promise<Parsed | null> {
     await forEachLine(file, (j) => {
       if (p.cwd === null && typeof j.cwd === 'string') p.cwd = j.cwd;
       if (typeof j.timestamp === 'string') { if (p.firstAt === null) p.firstAt = j.timestamp; p.lastAt = j.timestamp; }
-      if (j.type === 'custom-title' && typeof j.customTitle === 'string' && j.customTitle.trim()) p.customTitle = j.customTitle;
-      else if (j.type === 'ai-title' && typeof j.aiTitle === 'string' && j.aiTitle.trim()) p.aiTitle = j.aiTitle;
-      else if (j.type === 'summary' && typeof j.summary === 'string' && j.summary.trim()) p.summary = j.summary;
+      const t = titleOf(j);
+      if (t) p[t.kind] = t.text;
       const h = humanText(j);
       if (h !== null) { p.humans++; if (p.firstQuestion === null && !isCommandLine(h)) p.firstQuestion = h; }
       if (assistantText(j) !== null) ids.add(String(j.message?.id ?? j.uuid ?? ''));
@@ -213,7 +229,7 @@ export async function readTranscript(projectPath: string, sid: string, opts: His
   if (!file) throw new UserError(404, '이 프로젝트에 없는 세션');
   const items: TranscriptItem[] = [];
   const uses = new Map<string, { name: string; input: any }>();
-  let tools: { type: 'tools'; names: string[]; count: number } | null = null;
+  let tools: { type: 'tools'; names: string[]; count: number; labels: string[] } | null = null;
   const push = (it: TranscriptItem) => { items.push(it); tools = null; };
   await forEachLine(file, (j) => {
     const at = typeof j.timestamp === 'string' ? j.timestamp : null;
@@ -230,8 +246,9 @@ export async function readTranscript(projectPath: string, sid: string, opts: His
       for (const u of toolUses(j)) {
         uses.set(u.id, { name: u.name, input: u.input });
         if (u.name === 'AskUserQuestion') continue; // 답한 질문 줄로 보인다
-        if (!tools) { tools = { type: 'tools', names: [], count: 0 }; items.push(tools); }
+        if (!tools) { tools = { type: 'tools', names: [], count: 0, labels: [] }; items.push(tools); }
         if (!tools.names.includes(u.name)) tools.names.push(u.name);
+        tools.labels.push(toolLabel(u.name, u.input)); // 채팅 화면 요약과 같은 글("Bash ls")
         tools.count++;
       }
       return;

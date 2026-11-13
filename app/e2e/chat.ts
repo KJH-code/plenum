@@ -10,7 +10,7 @@ import { chromium, type Page } from 'playwright';
 import { createHandler, listen } from '../server/app.ts';
 import type { Command } from '../server/open.ts';
 import { makeFakeStreamClaude } from '../test/fakeclaudeStream.ts';
-import { cardScript, copyHistory, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
+import { cardScript, copyHistory, KIT_WORKER, kitWorkerScript, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
 
 const SERVER_DOWN = 'Plenum 서버가 꺼져 있음 — 터미널에서 다시 켜기';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 채팅-'));
@@ -27,7 +27,8 @@ copyHistory(claudeHome, projDir, '-tmp-plenum-rec-----AbCdEf', PAST);
 const S01 = 'e01e01e0-5604-499f-a80b-49f35d8d09bb';
 copyHistory(claudeHome, projDir, '-tmp-plenum-rec-----AbCdEg', 'b5b49096-5604-499f-a80b-49f35d8d09bb', S01);
 
-const handler = createHandler({ cfgDir: path.join(root, '설정'), env, claudeHome, launcher: async (c) => { launched.push(c); return { ok: true } as const; } });
+// 워커 모델: kit 레포 대신 같은 자리(workerModel)에 넣는다. kit 워커 정의에서 찾는 부분(접두어 떼기)은 단위 테스트(chat.test)가 본다
+const handler = createHandler({ cfgDir: path.join(root, '설정'), env, claudeHome, workerModel: (t) => (t === KIT_WORKER ? 'haiku' : null), launcher: async (c) => { launched.push(c); return { ok: true } as const; } });
 let { server, port } = await listen(handler, 0);
 const base = `http://127.0.0.1:${port}`;
 const H = { 'Content-Type': 'application/json', 'X-Plenum': '1' };
@@ -102,7 +103,7 @@ try {
   assert.equal(r[0].response.behavior, 'allow');
   assert.deepEqual(r[1].response, { behavior: 'allow', updatedInput: { command: 'touch a.txt', description: 'Create a.txt' } });
   assert.deepEqual(r[2].response.updatedPermissions, [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch c.txt' }], behavior: 'allow', destination: 'session' }]);
-  assert.deepEqual(r[3].response, { behavior: 'deny', message: '삭제는 내가 직접 할게' });
+  assert.deepEqual(r[3].response, { behavior: 'deny', message: '사용자가 거부함. 이유: 삭제는 내가 직접 할게' });
   const tools = page.getByTestId('tools');
   assert.ok(await tools.count() >= 1);
   assert.match(await tools.first().locator('summary').innerText(), /^도구 \d+번 · /);
@@ -141,7 +142,30 @@ try {
   assert.equal(await page.getByTestId('worker-table').count(), 1, '턴 하나에 워커 표 하나');
   await page.getByTestId('assistant-text').filter({ hasText: 'ALL DONE' }).waitFor(T);
   await noHScroll('워커 표');
-  pass('(3) 04 녹화: 워커 표 2줄(count files·say hi) → 둘 다 끝남');
+  assert.equal(await page.getByTestId('worker-table').getByTestId('model-chip').count(), 0, 'general-purpose(모델 없음)에 모델 칩이 보인다');
+  pass('(3) 04 녹화: 워커 표 2줄(count files·say hi) → 둘 다 끝남, general-purpose 는 모델 칩 없음');
+
+  // ── (g) kit 워커(jh-kit:w-implement-lite): 워커 표에 모델 칩, 도는 동안 왼쪽 작동 중에 그 줄, 턴이 끝나면 사라짐 ──
+  const gScript = path.join(root, 'kit-worker.jsonl');
+  kitWorkerScript(gScript, 'eeeeeeee-1111-4222-8333-444444444444', 6000);
+  env.FAKE_STREAM_SCRIPT = gScript;
+  await page.getByRole('button', { name: '새 세션' }).click();
+  await sendText('kit 워커');
+  const kitRun = page.getByTestId('worker-run').filter({ hasText: 'w-implement-lite' });
+  await kitRun.locator('[data-testid=model-chip]', { hasText: 'haiku' }).waitFor(T);
+  assert.equal(await kitRun.getAttribute('data-state'), 'running');
+  assert.match(await kitRun.getByTestId('model-chip').getAttribute('class') ?? '', /\bchip haiku\b/);
+  const actRow = page.getByTestId('activity-row').filter({ hasText: 'w-implement-lite' });
+  await actRow.waitFor(T);
+  assert.equal(await actRow.getByTestId('model-chip').innerText(), 'haiku', '작동 중 줄과 워커 표 칩이 다르다');
+  assert.equal(await kitRun.getAttribute('data-state'), 'running', '작동 중 줄을 보기 전에 워커가 끝났다(대본 지연이 짧다)');
+  await page.getByTestId('assistant-text').filter({ hasText: '워커가 끝났다' }).waitFor(T);
+  await status().filter({ hasText: '끝남' }).waitFor(T);
+  await actRow.waitFor({ state: 'detached', ...T });
+  assert.equal(await kitRun.getAttribute('data-state'), 'done');
+  assert.equal(await kitRun.getByTestId('model-chip').innerText(), 'haiku', '끝난 뒤 워커 표 칩이 사라졌다');
+  await noHScroll('kit 워커 표');
+  pass('(g) kit 워커 jh-kit:w-implement-lite → 워커 표 모델 칩 haiku, 도는 동안 왼쪽 작동 중 줄(같은 칩), 턴 끝나면 작동 중에서 사라짐');
 
   // ── (4) 지난 세션 → 이어하기 → 지난 기록 ──
   const transcript = await (await fetch(`${base}/api/projects/${proj.id}/sessions/${PAST}/transcript`)).json();
@@ -162,6 +186,10 @@ try {
   await page.getByTestId('past-answered').first().waitFor(T);
   assert.deepEqual(await page.getByTestId('past-answered').allInnerTexts(), ['답함: a.txt', '거부함: Bash rm a.txt']);
   pass('(a) 지난 기록 카드 줄 "답함: a.txt"·"거부함: Bash rm a.txt" (접두어 한 번씩)');
+  // 지난 기록 도구 줄: 채팅 화면처럼 명령까지("Bash" 만이 아니라)
+  const pastTools = await page.getByTestId('past-tools').locator('summary').allInnerTexts();
+  assert.deepEqual(pastTools, ['도구 4번 · Bash touch a.txt, Bash touch c.txt, Bash touch c.txt, Bash rm a.txt', '도구 1번 · Bash ls -la a.txt c.txt']);
+  pass('(a2) 지난 기록 도구 줄에 명령: "Bash touch a.txt…"·"Bash ls -la a.txt c.txt"');
   await row.getByRole('button').first().click();
   await row.getByRole('button', { name: '이어하기' }).click();
   await pastBox.waitFor(T);

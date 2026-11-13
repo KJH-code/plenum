@@ -1,4 +1,4 @@
-// 채팅 e2e·스크린샷 준비: 진짜 녹화 경로, 합성 대본(한도 rejected·모르는 요청), 지난 세션 기록 복사.
+// 채팅 e2e·스크린샷 준비: 진짜 녹화 경로, 합성 대본(한도 rejected·모르는 요청·kit 워커), 지난 세션 기록 복사.
 import fs from 'node:fs';
 import path from 'node:path';
 import { APP } from '../test/helpers.ts';
@@ -41,6 +41,21 @@ export function cardScript(file: string, sid: string) {
     { dir: 'out', msg: { type: 'control_request', request_id: 'card-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'touch 카드.txt', description: '카드 대기' }, permission_suggestions: [] } } },
     { dir: 'in', msg: { type: 'control_response', response: { request_id: 'card-1' } } },
     { dir: 'out', msg: TEXT('msg_card', '카드 답을 받았다') }, { dir: 'out', msg: RESULT('카드 답을 받았다') }, { dir: 'exit', code: 0 }]);
+}
+
+// kit 워커 하나(subagent_type jh-kit:w-implement-lite)를 전경으로 돌린다. 줄 모양은 녹화 04 와 같고 이름만 kit 워커.
+// 워커가 runMs 동안 실행 중(작동 중 2초 폴링이 잡게) → 끝 → 턴 끝
+export const KIT_WORKER = 'jh-kit:w-implement-lite';
+export function kitWorkerScript(file: string, sid: string, runMs: number) {
+  const tid = 'toolu_e2eKitWorker0000000001';
+  const task = { task_id: 'ae2e00000000000001', tool_use_id: tid, session_id: sid };
+  writeScript(file, [...HELLO, { dir: 'out', msg: INIT(sid) },
+    { dir: 'out', msg: { type: 'assistant', message: { id: 'msg_kitw_1', role: 'assistant', content: [{ type: 'tool_use', id: tid, name: 'Agent', input: { description: '가벼운 구현', prompt: 'a.txt 만들기', subagent_type: KIT_WORKER } }] }, parent_tool_use_id: null } },
+    { dir: 'out', msg: { type: 'system', subtype: 'task_started', ...task, description: '가벼운 구현', subagent_type: KIT_WORKER, is_backgrounded: false, task_type: 'local_agent' } },
+    { dir: 'out', delayMs: runMs, msg: { type: 'system', subtype: 'task_updated', task_id: task.task_id, patch: { status: 'completed' }, session_id: sid } },
+    { dir: 'out', msg: { type: 'system', subtype: 'task_notification', ...task, status: 'completed', summary: '만들었다' } },
+    { dir: 'out', msg: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: [{ type: 'text', text: '만들었다' }] }] }, parent_tool_use_id: null } },
+    { dir: 'out', msg: TEXT('msg_kitw_2', '워커가 끝났다') }, { dir: 'out', msg: RESULT('워커가 끝났다') }, { dir: 'exit', code: 0 }]);
 }
 
 // 채팅이 처리 못 하는 control_request
