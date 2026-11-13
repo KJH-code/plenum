@@ -16,12 +16,17 @@ import { cancelSave, getSave, isSaving, retrySave, startSave } from './kitsave.t
 import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
+import { handleHistory } from './historyRoutes.ts';
 import { absolutePath, checkCloneDir, checkKitRepo } from './paths.ts';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
 
-export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher }
+export interface ServerOptions {
+  cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher;
+  claudeHome?: string;                                         // 세션 기록 폴더(없으면 CLAUDE_CONFIG_DIR 또는 ~/.claude)
+  runningOf?(sessionId: string): 'chat' | 'terminal' | null;   // 지난 세션 목록의 running
+}
 
 // 3단계 라우트 모듈이 받는 것. 각 모듈은 `async function handleXxx(ctx: RouteCtx): Promise<boolean>`(처리했으면 true)
 export interface RouteCtx {
@@ -192,7 +197,7 @@ export function createHandler(opts: ServerOptions = {}) {
     }
     // ── 3단계 라우트 (단위마다 한 줄: if (await handleXxx(ctx)) return;) ──
     const ctx: RouteCtx = { req, res, method, parts, cfg, cfgDir, env, body: () => readBody(req), send: (status, body) => send(res, status, body) };
-    void ctx;
+    if (await handleHistory(ctx, { claudeHome: opts.claudeHome, runningOf: opts.runningOf })) return;
     // ── 3단계 라우트 끝 ──
     throw new UserError(404, `없는 API: ${method} /api/${parts.join('/')}`);
   }
