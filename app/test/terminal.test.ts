@@ -21,7 +21,7 @@ describe('terminalCommand', () => {
   test('win32 + wt 있음: wt 절대 경로, 한글·공백 cwd 가 args 한 칸에 그대로', () => {
     const t = terminalCommand({ cwd: WIN_CWD, sessionId: SID, platform: 'win32', env: winEnv, isFile: hasWt });
     expect(t.via).toBe('wt');
-    expect(t.command).toEqual({ cmd: WT, args: ['-d', WIN_CWD, 'powershell', '-NoExit', '-Command', `claude --resume ${SID}`] });
+    expect(t.command).toEqual({ cmd: WT, args: ['-d', WIN_CWD, 'powershell', '-NoExit', '-Command', `claude --resume ${SID}`], env: winEnv });
     expect(t.command!.verbatim).toBeUndefined();
     expect(t.display).toEqual([`cd -LiteralPath '${WIN_CWD}'`, `claude --resume ${SID}`]);
   });
@@ -33,7 +33,20 @@ describe('terminalCommand', () => {
       cmd: 'cmd.exe',
       args: ['/d', '/s', '/c', `"start "" /D "${WIN_CWD}" powershell -NoExit -Command "claude --resume ${SID}""`],
       verbatim: true,
+      env: winEnv,
     });
+  });
+
+  test('실행 env: 서버 env 에 PLENUM_NOTIFY=0 이 있어도 터미널 claude 에는 없다(훅이 유일한 통로), 서버 env 는 그대로', () => {
+    const env = { ...winEnv, PLENUM_NOTIFY: '0', HOME_X: '홍길동' };
+    for (const isFile of [hasWt, noWt]) {
+      const t = terminalCommand({ cwd: WIN_CWD, sessionId: SID, platform: 'win32', env, isFile });
+      expect(t.command!.env).toBeDefined();
+      expect('PLENUM_NOTIFY' in t.command!.env!).toBe(false);
+      expect(t.command!.env).toEqual({ ...winEnv, HOME_X: '홍길동' });
+      expect(t.command!.env).not.toBe(env);
+    }
+    expect(env.PLENUM_NOTIFY).toBe('0');
   });
 
   test('wt 없을 때 cmd 가 해석하는 문자(" % 줄바꿈)가 든 cwd 는 거부', () => {
@@ -94,6 +107,7 @@ describe('POST /api/projects/:id/sessions/:sid/terminal', () => {
     expect(await handleActivity(ctx, { activity, chats, launcher, platform: 'win32', isFile: hasWt })).toBe(true);
     expect(calls).toEqual(['close:c1:start', 'close:c1:end', 'launch:terminal']);
     expect(launched[0].cmd).toBe(WT);
+    expect(launched[0].env).toEqual(winEnv); // 라우트도 ctx.env 사본을 넘긴다
     expect(sent).toHaveLength(1);
     expect(sent[0].status).toBe(200);
     expect(sent[0].body).toMatchObject({ closedChat: true, launched: true, via: 'wt', display: [`cd -LiteralPath '${WIN_CWD}'`, `claude --resume ${SID}`] });

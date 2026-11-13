@@ -17,6 +17,13 @@ export interface TerminalInput {
   isFile?: (f: string) => boolean;
 }
 
+// 터미널 claude 의 env: 받은 env 사본에서 PLENUM_NOTIFY 만 뺀다. 터미널 세션은 훅이 Plenum 에 알리는 유일한 통로다
+export function terminalEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  delete out.PLENUM_NOTIFY;
+  return out;
+}
+
 export function terminalCommand({ cwd, sessionId, platform = process.platform, env = process.env, isFile }: TerminalInput): TerminalCommand {
   if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) throw new Error(`세션 ID 모양이 아니다: ${String(sessionId)}`);
   // win32: path.win32.isAbsolute('\\a') 는 true 지만 드라이브가 없다 → 드라이브 문자나 UNC 만
@@ -29,11 +36,11 @@ export function terminalCommand({ cwd, sessionId, platform = process.platform, e
     const display = [`cd -LiteralPath '${cwd.replace(/'/g, "''")}'`, resume];
     // wt 는 ; 를 명령 구분자로 읽는다 → ; 가 든 폴더는 cmd 로
     const wt = cwd.includes(';') ? null : resolveCommand('wt', env, 'win32', isFile);
-    if (wt) return { display, via: 'wt', command: { cmd: wt, args: ['-d', cwd, 'powershell', '-NoExit', '-Command', resume] } };
+    if (wt) return { display, via: 'wt', command: { cmd: wt, args: ['-d', cwd, 'powershell', '-NoExit', '-Command', resume], env: terminalEnv(env) } };
     if (CMD_UNSAFE.test(cwd)) throw new Error(`경로에 cmd가 해석하는 문자(" % 줄바꿈)가 있어서 터미널을 열 수 없다: ${cwd}`);
     // /s 는 맨 앞·맨 뒤 따옴표 한 쌍만 벗긴다. start 의 첫 따옴표 인자는 창 제목("")
     const line = `start "" /D "${cwd}" powershell -NoExit -Command "${resume}"`;
-    return { display, via: 'cmd', command: { cmd: 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true } };
+    return { display, via: 'cmd', command: { cmd: 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true, env: terminalEnv(env) } };
   }
   return { display: [`cd '${cwd.replace(/'/g, `'\\''`)}'`, resume], via: 'manual', command: null };
 }

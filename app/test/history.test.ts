@@ -108,6 +108,23 @@ describe('listSessions — 진짜 기록', () => {
     } finally { fs.rmSync(path.join(home, 'projects', DIR_F, `${sid}.jsonl`)); }
   });
 
+  it('지난 기록: 명령 줄은 "/model"(인자 있으면 "/이름 인자") 한 줄, 명령 출력 줄은 건너뜀, XML 없음', async () => {
+    const sid = '4b6b568b-0000-4000-8000-0000000000bf';
+    const STDOUT = '<local-command-stdout>Set model to claude-opus-5-5</local-command-stdout>';
+    const STDERR = '<local-command-stderr>오류</local-command-stderr>';
+    const MODEL_ARG = '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>haiku</command-args>';
+    // [/model, stdout, "버그 고쳐줘", /model haiku, stderr, (18줄)]
+    cloneSession(DIR_F, S4b6b, DIR_F, sid, (ls) => ls.flatMap((l, i) => (i === 2 ? [
+      asText(l, MODEL), asText({ ...l, uuid: 'u-out' }, STDOUT), asText({ ...l, uuid: 'u-bug' }, '버그 고쳐줘'),
+      asText({ ...l, uuid: 'u-m2' }, MODEL_ARG), asText({ ...l, uuid: 'u-err' }, STDERR),
+    ] : [l])));
+    try {
+      const users = (await readTranscript(F, sid, opts())).filter((x) => x.type === 'user').map((x: any) => x.text);
+      expect(users.slice(0, 3)).toEqual(['/model', '버그 고쳐줘', '/model haiku']);
+      expect(users.some((t) => /<\/?[a-z-]+>/.test(t))).toBe(false);
+    } finally { fs.rmSync(path.join(home, 'projects', DIR_F, `${sid}.jsonl`)); }
+  });
+
   it('ai-title 이 있으면 제목, custom-title 이 있으면 그게 우선', async () => {
     const sid = '76d66e6d-0000-4000-8000-0000000000cc';
     const file = path.join(home, 'projects', DIR_F, `${sid}.jsonl`);

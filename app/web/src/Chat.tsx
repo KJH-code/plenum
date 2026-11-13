@@ -184,6 +184,12 @@ export type ConflictAction =
   | { kind: 'terminal'; sid: string }
   | { kind: 'ended'; message: string }
   | { kind: 'error'; message: string };
+// 이어할 세션 ID: 지난 세션 화면이면 그 세션이 먼저, 아니면 채팅이 받은 세션(init). 둘 다 없으면 새 세션
+// (채팅이 init 전에 끝났어도 지난 세션 화면이면 그 세션을 이어 간다)
+export function resumeTarget(resumeSid: string | null, chatSessionId: string | null): string | null {
+  return resumeSid ?? chatSessionId;
+}
+
 export function conflictAction(e: unknown, sid: string | null): ConflictAction | null {
   if (!(e instanceof ApiError) || e.status !== 409) return null;
   const reason = e.reason as ChatConflict | null;
@@ -335,7 +341,7 @@ export function Chat(props: ChatProps) {
     if (!t || sending) return;
     setSending(true); setErr(null); setWarn([]); setTermBlocked(null); setCardBlocked(null);
     // 새 세션, 이어하기, 끝난 채팅을 같은 세션으로 다시 — 이어할 세션 ID
-    const resume = chatId ? v.sessionId : resumeSid;
+    const resume = resumeTarget(resumeSid, v.sessionId);
     try {
       if (chatId && v.state !== 'ended') {
         const r = await api.send(chatId, t);
