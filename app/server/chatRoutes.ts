@@ -2,6 +2,7 @@
 // GET 이 아닌 요청의 X-Plenum 검사·Host 검사는 app.ts 가 먼저 한다. Access-Control-* 헤더는 보내지 않는다.
 import type { RouteCtx } from './app.ts';
 import type { ChatManager } from './chat.ts';
+import { claudeCaps } from './claudecaps.ts';
 import { UserError } from './errors.ts';
 import { findProject } from './projects.ts';
 
@@ -33,13 +34,14 @@ export async function handleChat(ctx: RouteCtx, mgr: ChatManager): Promise<boole
   const [a, b, c, d] = parts;
 
   if (a === 'limits' && !b && method === 'GET') { ctx.send(200, { limits: mgr.getLimits() }); return true; }
+  if (a === 'claude' && b === 'capabilities' && !c && method === 'GET') { ctx.send(200, await claudeCaps(ctx.env)); return true; }
 
   if (a === 'projects' && b && c === 'chats' && !d) {
     if (method === 'GET') { findProject(ctx.cfg, b); ctx.send(200, mgr.list(b)); return true; }
     if (method === 'POST') {
       const p = findProject(ctx.cfg, b);
       const body = await ctx.body();
-      const r = mgr.start({ id: p.id, path: p.path }, { text: body.text, model: body.model ?? undefined, effort: body.effort ?? undefined, resume: body.resume ?? undefined });
+      const r = await mgr.start({ id: p.id, path: p.path }, { text: body.text, model: body.model ?? undefined, effort: body.effort ?? undefined, resume: body.resume ?? undefined });
       ctx.send(201, r);
       return true;
     }

@@ -57,7 +57,7 @@ describe('녹화 재생', () => {
   it('01 카드: 질문 답·허용·이 세션 동안 허용(addRules 만)·거부 이유, 한도', async () => {
     const s = setup();
     const m = manager(s, s.fake.env({ script: rec('01-cards.jsonl'), extra: { CLAUDE_CODE_SESSION_ID: 'outer', CLAUDE_CODE_REMOTE_SESSION_ID: 'outer2' } }));
-    const { chat, warnings } = m.start(s.project, { text: '시작', model: 'haiku', effort: 'low' });
+    const { chat, warnings } = await m.start(s.project, { text: '시작', model: 'haiku', effort: 'low' });
     expect(warnings).toEqual([]);
     const id = chat.chatId;
 
@@ -140,7 +140,7 @@ describe('녹화 재생', () => {
   it('03 모드: 모드 질문 → "모드 없음" 답 → mode 이벤트 + sessions.json, Edit diff', async () => {
     const s = setup();
     const m = manager(s, s.fake.env({ script: rec('03-mode.jsonl') }));
-    const id = m.start(s.project, { text: 'README 첫 줄' }).chat.chatId;
+    const id = (await m.start(s.project, { text: 'README 첫 줄' })).chat.chatId;
     const q = await nextCard(m, id, 0);
     const qc = q.card as Extract<Card, { kind: 'question' }>;
     expect(qc.isModeQuestion).toBe(true);
@@ -166,7 +166,7 @@ describe('녹화 재생', () => {
   it('04 워커: 전경·백그라운드 2개, id = tool_use_id, 둘 다 done', async () => {
     const s = setup();
     const m = manager(s, s.fake.env({ script: rec('04-agents.jsonl') }), { workerModel: (t) => (t === 'general-purpose' ? 'haiku' : null) });
-    const id = m.start(s.project, { text: '워커' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '워커' })).chat.chatId;
     await waitEvent(m, id, 'result');
     const ws = events(m, id).filter((e) => e.type === 'worker').map((e: any) => e.worker);
     const ids = [...new Set(ws.map((w) => w.id))].sort();
@@ -186,7 +186,7 @@ describe('녹화 재생', () => {
   it('05 interrupt: control_request interrupt → result error_during_execution → idle, 닫으면 ended', async () => {
     const s = setup();
     const m = manager(s, s.fake.env({ script: rec('05-interrupt.jsonl') }));
-    const id = m.start(s.project, { text: '길게' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '길게' })).chat.chatId;
     await waitEvent(m, id, 'init');
     m.interrupt(id);
     const r = await waitEvent(m, id, 'result');
@@ -201,7 +201,7 @@ describe('녹화 재생', () => {
   it('응답 중에 닫으면 interrupt 먼저 보내고 끝난다', async () => {
     const s = setup();
     const m = manager(s, s.fake.env({ script: rec('05-interrupt.jsonl') }));
-    const id = m.start(s.project, { text: '길게' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '길게' })).chat.chatId;
     await waitEvent(m, id, 'init');
     expect(m.get(id)!.state).toBe('running');
     const t0 = Date.now();
@@ -226,7 +226,7 @@ describe('합성 대본', () => {
       { dir: 'in', msg: { type: 'control_response', response: { request_id: 'el-1' } } },
       { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m = manager(s, s.fake.env({ script: file }));
-    const id = m.start(s.project, { text: '안녕' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
     const c = await waitEvent(m, id, 'card');
     expect(c.card).toEqual({ kind: 'unknown', requestId: 'el-1', subtype: 'elicit_something', version: '2.1.323' });
     await waitEvent(m, id, 'result');
@@ -244,7 +244,7 @@ describe('합성 대본', () => {
       { dir: 'out', msg: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: reset, rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: reset, status: 'rejected' } } } } },
       { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m = manager(s, s.fake.env({ script: file }));
-    const id = m.start(s.project, { text: '안녕' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
     const l = await waitEvent(m, id, 'limits');
     expect(l.limits.rejected).toEqual({ window: 'five_hour', resetsAt: reset });
     expect(l.limits.fiveHour!.pct).toBe(100);
@@ -264,7 +264,7 @@ describe('합성 대본', () => {
     const file = path.join(s.root, 'old.jsonl');
     writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.200') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m = manager(s, s.fake.env({ script: file }));
-    const id = m.start(s.project, { text: '안녕' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
     const n = await waitEvent(m, id, 'notice', (e) => e.code === 'version-old');
     expect(n.level).toBe('warn');
     await waitEvent(m, id, 'result');
@@ -272,7 +272,7 @@ describe('합성 대본', () => {
     const file2 = path.join(s.root, 'ok.jsonl');
     writeScript(file2, [...HELLO, { dir: 'out', msg: INIT('2.1.248') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m2 = manager(s, s.fake.env({ script: file2 }));
-    const id2 = m2.start({ id: 'p2', path: s.project.path }, { text: '안녕' }).chat.chatId;
+    const id2 = (await m2.start({ id: 'p2', path: s.project.path }, { text: '안녕' })).chat.chatId;
     await waitEvent(m2, id2, 'result');
     expect(events(m2, id2).some((e) => e.type === 'notice' && e.code === 'version-old')).toBe(false);
   });
@@ -283,16 +283,16 @@ describe('합성 대본', () => {
     // init 뒤 다음 user 를 기다리며 running 으로 머문다
     writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
     const m = manager(s, s.fake.env({ script: file }));
-    const a = m.start(s.project, { text: '하나' });
+    const a = await m.start(s.project, { text: '하나' });
     expect(a.warnings).toEqual([]);
     await waitEvent(m, a.chat.chatId, 'init');
     expect(m.get(a.chat.chatId)!.state).toBe('running');
-    const b = m.start(s.project, { text: '둘' });
+    const b = await m.start(s.project, { text: '둘' });
     expect(b.warnings).toHaveLength(1);
     expect(b.warnings[0]).toContain('같은 프로젝트');
     expect(events(m, b.chat.chatId).filter((e) => e.type === 'notice' && e.code === 'concurrent')).toHaveLength(1);
     // 다른 프로젝트는 경고 없음
-    expect(m.start({ id: 'p2', path: s.project.path }, { text: '셋' }).warnings).toEqual([]);
+    expect((await m.start({ id: 'p2', path: s.project.path }, { text: '셋' })).warnings).toEqual([]);
     // send 도 같다 (b 가 running 이 된 뒤)
     await waitEvent(m, b.chat.chatId, 'init');
     expect(m.send(a.chat.chatId, '더').warnings).toHaveLength(1);
@@ -306,27 +306,27 @@ describe('합성 대본', () => {
     writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', sid) }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
     const alive = new Set<string>(['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee']);
     const m = manager(s, s.fake.env({ script: file }), { terminalAlive: (x) => alive.has(x) });
-    const status = (f: () => unknown) => { try { f(); return 0; } catch (e: any) { return e.status; } };
-    expect(status(() => m.start(s.project, { text: '이어', resume: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))).toBe(409);
-    expect(status(() => m.start(s.project, { text: '이어', resume: '../x' }))).toBe(400);
-    expect(status(() => m.start(s.project, { text: '이어', model: 'haiku; rm' }))).toBe(400);
-    expect(status(() => m.start(s.project, { text: '이어', model: 'x'.repeat(61) }))).toBe(400);
-    expect(status(() => m.start(s.project, { text: '이어', effort: 'ultra' }))).toBe(400);
-    expect(status(() => m.start(s.project, { text: '   ' }))).toBe(400);
+    const status = async (f: () => Promise<unknown>) => { try { await f(); return 0; } catch (e: any) { return e.status; } };
+    expect(await status(() => m.start(s.project, { text: '이어', resume: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))).toBe(409);
+    expect(await status(() => m.start(s.project, { text: '이어', resume: '../x' }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '이어', model: 'haiku; rm' }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '이어', model: 'x'.repeat(61) }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '이어', effort: 'ultra' }))).toBe(400);
+    expect(await status(() => m.start(s.project, { text: '   ' }))).toBe(400);
     expect(s.fake.argsCalls()).toHaveLength(0);
-    const a = m.start(s.project, { text: '이어', resume: sid, model: 'claude-opus-5-5[1m]', effort: 'max' });
+    const a = await m.start(s.project, { text: '이어', resume: sid, model: 'claude-opus-5-5[1m]', effort: 'max' });
     expect(a.chat.sessionId).toBe(sid);
-    const b = m.start(s.project, { text: '또', resume: sid });
+    const b = await m.start(s.project, { text: '또', resume: sid });
     expect(b.chat.chatId).toBe(a.chat.chatId);
     await waitEvent(m, a.chat.chatId, 'init');
     expect(s.fake.argsCalls()).toHaveLength(1);
     expect(s.fake.argsCalls()[0].args.slice(-6)).toEqual(['--model', 'claude-opus-5-5[1m]', '--effort', 'max', '--resume', sid]);
   });
 
-  it('PATH 에 claude 가 없으면 400', () => {
+  it('PATH 에 claude 가 없으면 400', async () => {
     const s = setup();
     const m = manager(s, { ...s.fake.env(), PATH: path.join(s.root, '빈 PATH') });
-    expect(() => m.start(s.project, { text: '안녕' })).toThrow(/PATH/);
+    await expect(m.start(s.project, { text: '안녕' })).rejects.toThrow(/PATH/);
   });
 
   it('JSON 이 아닌 줄·모르는 type 은 무시한다', async () => {
@@ -334,7 +334,7 @@ describe('합성 대본', () => {
     const file = path.join(s.root, 'junk.jsonl');
     writeScript(file, [...HELLO, { dir: 'out', msg: '이건 JSON 객체가 아님' }, { dir: 'out', msg: { type: 'mystery', x: 1 } }, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m = manager(s, s.fake.env({ script: file }));
-    const id = m.start(s.project, { text: '안녕' }).chat.chatId;
+    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
     const r = await waitEvent(m, id, 'result');
     expect(r.text).toBe('끝');
   });
@@ -427,6 +427,42 @@ describe('라우트', () => {
       expect(closed.body.state).toBe('ended');
       expect((await srv.call('POST', `/api/chats/${chatId}/send`, { text: 'x' })).status).toBe(409);
       expect((await srv.call('GET', `/api/projects/${pid}/chats`)).body).toEqual([]);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
+describe('--effort 지원 감지', () => {
+  it('도움말에 --effort 가 있으면 effort: true, 같은 경로·버전은 캐시', async () => {
+    const s = setup();
+    const env = s.fake.env({ version: '2.1.300' });
+    const { claudeCaps } = await import('../server/claudecaps.ts');
+    expect(await claudeCaps(env)).toEqual({ found: true, version: '2.1.300', effort: true });
+    // 캐시: 도움말이 바뀌어도 같은 경로·버전이면 다시 묻지 않는다
+    expect(await claudeCaps({ ...env, FAKE_CLAUDE_HELP_EFFORT: '0' })).toEqual({ found: true, version: '2.1.300', effort: true });
+    expect(await claudeCaps({ ...env, PATH: path.join(s.root, '빈 PATH') })).toEqual({ found: false, version: null, effort: false });
+  });
+
+  it('도움말에 --effort 가 없으면 effort: false, effort 를 넣은 start 는 400 (없으면 시작)', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'ok.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.248') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const env = s.fake.env({ script: file, version: '2.1.248', helpEffort: false });
+    const chats = createChatManager({ cfgDir: s.cfgDir, env, closeWaitMs: 3000 });
+    managers.push(chats);
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
+    try {
+      expect((await srv.call('GET', '/api/claude/capabilities')).body).toEqual({ found: true, version: '2.1.248', effort: false });
+      const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+      const bad = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕', effort: 'high' });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error).toContain('--effort 가 없다');
+      expect(s.fake.argsCalls()).toHaveLength(0);
+      const ok = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕', model: 'haiku' });
+      expect(ok.status).toBe(201);
+      await waitEvent(chats, ok.body.chat.chatId, 'result');
+      expect(s.fake.argsCalls()[0].args).not.toContain('--effort');
     } finally {
       await srv.close();
     }

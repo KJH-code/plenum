@@ -27,8 +27,8 @@ it('shutdownAll: HANG 가짜 claude 2개와 손자까지 10초 안에 모두 끝
   fs.mkdirSync(proj);
   const fake = makeFakeStreamClaude(path.join(dir, '가짜'));
   const m = createChatManager({ cfgDir, env: fake.env({ hang: true }), closeWaitMs: 1000 });
-  const a = m.start({ id: 'p', path: proj }, { text: '하나' }).chat.chatId;
-  const b = m.start({ id: 'p', path: proj }, { text: '둘' }).chat.chatId;
+  const a = (await m.start({ id: 'p', path: proj }, { text: '하나' })).chat.chatId;
+  const b = (await m.start({ id: 'p', path: proj }, { text: '둘' })).chat.chatId;
   expect(await until(() => fake.hangPids().length === 2)).toBe(true);
   const pids = fake.hangPids().flat();
   expect(pids).toHaveLength(4);

@@ -9,6 +9,7 @@ import {
   type Card, type CardReply, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
   type ModeName, type Question, type SessionRule, type WorkerRun,
 } from './chatTypes.ts';
+import { claudeCaps, type ClaudeCaps } from './claudecaps.ts';
 import { UserError } from './errors.ts';
 import { commandFor, resolveCommand } from './open.ts';
 import { addPid, killTree, killTreeNow, removePid } from './proc.ts';
@@ -17,6 +18,7 @@ import { readLimits, saveLimits, updateSession } from './store.ts';
 export interface ChatDeps {
   terminalAlive(sessionId: string): boolean;
   workerModel(subagentType: string): string | null;
+  caps(): Promise<ClaudeCaps>;                             // --effort 지원 여부 (effort 를 줄 때만 본다)
 }
 export interface StartOptions { text: string; model?: string; effort?: string; resume?: string }
 export interface ChatManagerOptions {
@@ -30,7 +32,7 @@ export interface ChatManagerOptions {
 type EventBody = ChatEvent extends infer E ? (E extends any ? Omit<E, 'seq' | 'at'> : never) : never;
 
 export interface ChatManager extends ChatRegistry {
-  start(project: { id: string; path: string }, opts: StartOptions): { chat: ChatInfo; warnings: string[] };
+  start(project: { id: string; path: string }, opts: StartOptions): Promise<{ chat: ChatInfo; warnings: string[] }>;
   respond(chatId: string, reply: CardReply): ChatInfo;
   send(chatId: string, text: string): { chat: ChatInfo; warnings: string[] };
   interrupt(chatId: string): ChatInfo;
@@ -171,7 +173,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   const { cfgDir, env } = o;
   const platform = o.platform ?? process.platform;
   const closeWaitMs = o.closeWaitMs ?? 8000;
-  const deps: ChatDeps = { terminalAlive: () => false, workerModel: () => null, ...o.deps };
+  const deps: ChatDeps = { terminalAlive: () => false, workerModel: () => null, caps: () => claudeCaps(env, platform), ...o.deps };
   const chats = new Map<string, Chat>();
   const globalListeners = new Set<(chat: ChatInfo, ev: ChatEvent) => void>();
   let limits: Limits | null = readLimits(cfgDir);
@@ -381,7 +383,17 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     setState(c, 'ended');
   }
 
-  function start(project: { id: string; path: string }, opts: StartOptions): { chat: ChatInfo; warnings: string[] } {
+  // effort 를 주면 이 claude 가 --effort 를 아는지 먼저 본다(노트북 2.1.248 에는 없을 수 있다). 나머지는 startNow 가 동기로
+  async function start(project: { id: string; path: string }, opts: StartOptions): Promise<{ chat: ChatInfo; warnings: string[] }> {
+    const effort = opts?.effort ?? undefined;
+    if (effort !== undefined && typeof effort === 'string' && EFFORTS.includes(effort)) {
+      const caps = await deps.caps();
+      if (caps.found && !caps.effort) throw new UserError(400, `이 Claude Code 버전에는 --effort 가 없다${caps.version ? ` (${caps.version})` : ''} — 노력도 없이 시작하거나 claude update`);
+    }
+    return startNow(project, opts);
+  }
+
+  function startNow(project: { id: string; path: string }, opts: StartOptions): { chat: ChatInfo; warnings: string[] } {
     const text = typeof opts.text === 'string' ? opts.text : '';
     if (!text.trim()) throw new UserError(400, '보낼 글이 비어 있다');
     const model = opts.model ?? undefined;

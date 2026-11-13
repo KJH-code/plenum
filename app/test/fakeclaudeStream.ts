@@ -6,6 +6,7 @@
 // stdin 이 닫히면 남은 in 은 건너뛰고 out 을 다 낸 뒤 종료 코드 0 (녹화 06).
 // 기다리지 않던 interrupt 를 받으면 control_response {still_queued:[]} + result/error_during_execution 을 내고 종료 1.
 // FAKE_STREAM_LOG: 받은 stdin 줄 기록. FAKE_STREAM_ARGS: {args, cwd, sessionEnv} 한 줄. FAKE_STREAM_DELAY_MS: out 줄 간격.
+// --version → FAKE_CLAUDE_VERSION(기본 2.1.323), --help → FAKE_CLAUDE_HELP_EFFORT=0 이면 --effort 줄 없는 도움말.
 // FAKE_STREAM_HANG=1: 시작하자마자 손자 프로세스 하나를 띄우고(FAKE_STREAM_PIDS 에 "자기 손자" pid 기록) 무엇을 받아도 안 끝난다.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +18,16 @@ const { spawn } = require('child_process');
 const readline = require('readline');
 const env = process.env;
 const args = process.argv.slice(2);
+if (args[0] === '--version') { console.log((env.FAKE_CLAUDE_VERSION || '2.1.323') + ' (Claude Code)'); process.exit(0); }
+if (args[0] === '--help') {
+  const lines = ['Usage: claude [options] [command] [prompt]', '', 'Options:',
+    '  -p, --print                       Print response and exit',
+    '  --model <model>                   Model for the current session'];
+  if (env.FAKE_CLAUDE_HELP_EFFORT !== '0') lines.push('  --effort <level>                  Effort level for the current session (low, medium, high, xhigh, max)');
+  lines.push('  --resume [value]                  Resume a conversation');
+  console.log(lines.join('\n'));
+  process.exit(0);
+}
 if (!args.includes('-p')) { console.error('fake claude stream: -p 가 없다'); process.exit(64); }
 if (env.FAKE_STREAM_ARGS) fs.appendFileSync(env.FAKE_STREAM_ARGS, JSON.stringify({ args, cwd: process.cwd(), sessionEnv: [env.CLAUDE_CODE_SESSION_ID || null, env.CLAUDE_CODE_REMOTE_SESSION_ID || null] }) + '\n');
 const hang = env.FAKE_STREAM_HANG === '1';
@@ -84,7 +95,7 @@ export interface FakeStreamClaude {
   logFile: string;     // 받은 stdin 줄
   argsFile: string;    // 받은 인자
   pidsFile: string;    // HANG: "자기 손자"
-  env(o?: { script?: string; hang?: boolean; delayMs?: number; extra?: Record<string, string> }): NodeJS.ProcessEnv;
+  env(o?: { script?: string; hang?: boolean; delayMs?: number; version?: string; helpEffort?: boolean; extra?: Record<string, string> }): NodeJS.ProcessEnv;
   stdin(): any[];
   argsCalls(): { args: string[]; cwd: string; sessionEnv: (string | null)[] }[];
   hangPids(): number[][];
@@ -117,6 +128,8 @@ export function makeFakeStreamClaude(dir: string, form: FakeForm = defaultForm()
       ...(o.script ? { FAKE_STREAM_SCRIPT: o.script } : {}),
       ...(o.hang ? { FAKE_STREAM_HANG: '1' } : {}),
       ...(o.delayMs !== undefined ? { FAKE_STREAM_DELAY_MS: String(o.delayMs) } : {}),
+      ...(o.version ? { FAKE_CLAUDE_VERSION: o.version } : {}),
+      ...(o.helpEffort === false ? { FAKE_CLAUDE_HELP_EFFORT: '0' } : {}),
       ...o.extra,
     }),
     stdin: () => lines(logFile).map((l) => JSON.parse(l)),
