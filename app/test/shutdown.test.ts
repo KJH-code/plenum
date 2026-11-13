@@ -140,6 +140,11 @@ it('cleanupOrphans: 시작 시각이 기록과 다르면(pid 재사용) 또는 �
     expect(await cleanupOrphans(cfgDir)).toBe(0);
     await sleep(300);
     expect(isAlive(orphan.pid!)).toBe(true);
+    expect(readPids(cfgDir).map((e) => e.pid)).toEqual([orphan.pid]); // 살아 있는 동안은 항목을 남긴다
+    // 프로세스가 끝나면 그때 지운다
+    kill(orphan);
+    await sleep(500);
+    expect(await cleanupOrphans(cfgDir)).toBe(0);
     expect(readPids(cfgDir)).toEqual([]);
   } finally { kill(orphan); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
 });

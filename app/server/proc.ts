@@ -169,7 +169,9 @@ export async function cleanupOrphans(
   let n = 0;
   for (const e of list) {
     if (await ownerAlive(e, platform, startTime)) continue;
-    if (e.pid === process.pid || !isAlive(e.pid) || e.procStart === null) { drop.add(key(e)); continue; }
+    if (e.pid === process.pid || !isAlive(e.pid)) { drop.add(key(e)); continue; }
+    // 시작 시각 기록이 없다(띄울 때 못 읽음·옛 모양): 대조할 수 없으니 안 죽이고 항목도 남긴다. 프로세스가 끝나면 위에서 지운다(재혁 결정)
+    if (e.procStart === null) continue;
     const now = await startTime(e.pid, platform);
     if (now === null) continue;
     drop.add(key(e));
