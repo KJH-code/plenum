@@ -5,7 +5,7 @@
 //   exit 자리에서는 stdin 이 닫힐 때까지 기다렸다가(진짜는 다음 입력을 기다린다) 그 종료 코드로 끝난다.
 // stdin 이 닫히면 남은 in 은 건너뛰고 out 을 다 낸 뒤 종료 코드 0 (녹화 06).
 // 기다리지 않던 interrupt 를 받으면 control_response {still_queued:[]} + result/error_during_execution 을 내고 종료 1.
-// FAKE_STREAM_LOG: 받은 stdin 줄 기록. FAKE_STREAM_ARGS: {args, cwd, sessionEnv, notify(받은 PLENUM_NOTIFY, 없으면 null)} 한 줄. FAKE_STREAM_DELAY_MS: out 줄 간격.
+// FAKE_STREAM_LOG: 받은 stdin 줄 기록. FAKE_STREAM_ARGS: {args, cwd, sessionEnv, notify(받은 PLENUM_NOTIFY, 없으면 null)} 한 줄. FAKE_STREAM_DELAY_MS: out 줄 간격. 합성 대본 out 줄의 delayMs: 그 줄만 늦게 낸다.
 // --version → FAKE_CLAUDE_VERSION(기본 2.1.323), --help → FAKE_CLAUDE_HELP_EFFORT=0 이면 --effort 줄 없는 도움말.
 // FAKE_STREAM_HANG=1: 시작하자마자 손자 프로세스 하나를 띄우고(FAKE_STREAM_PIDS 에 "자기 손자" pid 기록) 무엇을 받아도 안 끝난다.
 import fs from 'node:fs';
@@ -81,7 +81,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 (async () => {
   let code = 0;
   for (const x of script) {
-    if (x.dir === 'out') { if (delay) await sleep(delay); out(x.msg); }
+    if (x.dir === 'out') { if (delay) await sleep(delay); if (x.delayMs) await sleep(x.delayMs); out(x.msg); }
     else if (x.dir === 'in') { waitingFor = x.msg; await waitFor(matches(x.msg)); waitingFor = null; }
     else { code = x.code == null ? 0 : x.code; break; }
   }
@@ -139,6 +139,6 @@ export function makeFakeStreamClaude(dir: string, form: FakeForm = defaultForm()
 }
 
 // 합성 대본: 녹화와 같은 한 줄 모양으로 쓴다
-export function writeScript(file: string, items: ({ dir: 'in' | 'out'; msg: unknown } | { dir: 'exit'; code: number })[]) {
+export function writeScript(file: string, items: ({ dir: 'in' | 'out'; msg: unknown; delayMs?: number } | { dir: 'exit'; code: number })[]) {
   fs.writeFileSync(file, items.map((x) => JSON.stringify(x)).join('\n') + '\n');
 }

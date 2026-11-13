@@ -9,7 +9,11 @@ import { chatArgs, chatEnv, createChatManager, LIMIT_UNKNOWN_RESET, type ChatMan
 import type { Card, ChatEvent } from '../server/chatTypes.ts';
 import { readLimits, readSessions, saveLimits } from '../server/store.ts';
 import { makeFakeStreamClaude, writeScript, type FakeStreamClaude } from './fakeclaudeStream.ts';
-import { APP, inProcess } from './helpers.ts';
+import { workerModel } from '../server/app.ts';
+import { defaultConfig, saveConfig } from '../server/config.ts';
+import { readKit } from '../server/kit.ts';
+import { APP, copyDir, inProcess } from './helpers.ts';
+import { FIXTURE_KIT } from './kitrepo.ts';
 
 const REC = path.join(APP, 'test', 'fixtures', 'stream');
 const rec = (name: string) => path.join(REC, name);
@@ -109,7 +113,8 @@ describe('녹화 재생', () => {
     const ss = resp(pc2.requestId).response;
     expect(ss.updatedPermissions).toEqual([{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch c.txt' }], behavior: 'allow', destination: 'session' }]);
     expect(JSON.stringify(ss)).not.toMatch(/setMode|addDirectories/);
-    expect(resp(pc3.requestId).response).toEqual({ behavior: 'deny', message: '삭제는 내가 직접 할게' });
+    // "사용자가" 를 밝힌다(그냥 이유만 주면 Claude 가 훅이 막은 것으로 이해했다)
+    expect(resp(pc3.requestId).response).toEqual({ behavior: 'deny', message: '사용자가 거부함. 이유: 삭제는 내가 직접 할게' });
 
     // 한도: pct 4·28, limits.json
     const lim = events(m, id).filter((e) => e.type === 'limits');
@@ -443,6 +448,50 @@ describe('합성 대본', () => {
     }
   });
 
+  // 거부 이유 → stdin 의 deny message (정확 일치)
+  it.each([
+    { reason: undefined, message: '사용자가 거부함' },
+    { reason: '', message: '사용자가 거부함' },
+    { reason: '   ', message: '사용자가 거부함' },
+    { reason: ' 지우지 마 ', message: '사용자가 거부함. 이유: 지우지 마' },
+  ])('거부: 이유 $reason → message "$message"', async ({ reason, message }) => {
+    const s = setup();
+    const file = path.join(s.root, 'deny.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') },
+      { dir: 'out', msg: { type: 'control_request', request_id: 'd-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'rm a.txt' }, permission_suggestions: [] } } },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'd-1' } } }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const id = (await m.start(s.project, { text: '지워' })).chat.chatId;
+    await waitEvent(m, id, 'card');
+    m.respond(id, { requestId: 'd-1', action: 'deny', ...(reason !== undefined ? { reason } : {}) });
+    await waitEvent(m, id, 'result');
+    const r = s.fake.stdin().find((x) => x.type === 'control_response');
+    expect(r).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: 'd-1', response: { behavior: 'deny', message } } });
+  });
+
+  it('플러그인 캐시 Read 허용 규칙: 띄운 claude 인자에 있고, CLAUDE_CONFIG_DIR 이 있으면 없다', async () => {
+    const RULE = 'Read(~/.claude/plugins/cache/**)';
+    const pair = (args: string[]) => { const i = args.indexOf('--allowedTools'); return i < 0 ? null : args.slice(i, i + 2); };
+    // 함수 모양
+    expect(pair(chatArgs({}))).toEqual(['--allowedTools', RULE]);
+    expect(pair(chatArgs({ model: 'haiku', resume: '11111111-2222-4333-8444-555555555555' }, { PATH: '/x' }))).toEqual(['--allowedTools', RULE]);
+    expect(pair(chatArgs({}, { CLAUDE_CONFIG_DIR: 'C:\\Users\\홍길동\\다른 설정' }))).toBeNull();
+    expect(pair(chatArgs({}, { CLAUDE_CONFIG_DIR: '' }))).toEqual(['--allowedTools', RULE]); // 빈 값은 없는 것과 같다
+    expect(chatArgs({}).filter((a) => a.startsWith('Read(') || /^(Edit|Write|Bash)\(/.test(a))).toEqual([RULE]); // Read 만
+    // 실제로 띄운 인자
+    const s = setup();
+    const file = path.join(s.root, 'args.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const m1 = manager(s, s.fake.env({ script: file }));
+    await waitEvent(m1, (await m1.start(s.project, { text: '하나' })).chat.chatId, 'result');
+    const m2 = manager(s, s.fake.env({ script: file, extra: { CLAUDE_CONFIG_DIR: path.join(s.root, '다른 설정') } }));
+    await waitEvent(m2, (await m2.start(s.project, { text: '둘' })).chat.chatId, 'result');
+    const calls = s.fake.argsCalls();
+    expect(calls).toHaveLength(2);
+    expect(pair(calls[0].args)).toEqual(['--allowedTools', RULE]);
+    expect(pair(calls[1].args)).toBeNull();
+  });
+
   it('PATH 에 claude 가 없으면 400', async () => {
     const s = setup();
     const m = manager(s, { ...s.fake.env(), PATH: path.join(s.root, '빈 PATH') });
@@ -668,6 +717,26 @@ describe('끝난 채팅·훅 (지난 세션 running, 작동 중)', () => {
     } finally {
       await srv.close();
     }
+  });
+});
+
+describe('워커 모델 (kit 워커 정의)', () => {
+  it('subagent_type 의 플러그인 접두어를 떼고 kit 워커 이름으로 찾는다 (jh-kit:w-implement-lite → haiku)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 테스트-'));
+    const repo = path.join(root, 'jh kit');
+    copyDir(FIXTURE_KIT, path.join(repo, 'kit'));
+    const impl = fs.readFileSync(path.join(repo, 'kit', 'workers', 'impl.md'), 'utf8');
+    fs.writeFileSync(path.join(repo, 'kit', 'workers', 'w-implement-lite.md'), impl.replace('name: impl', 'name: w-implement-lite').replace('model: sonnet', 'model: haiku'));
+    const ky = path.join(repo, 'kit', 'kit.yaml');
+    fs.writeFileSync(ky, fs.readFileSync(ky, 'utf8').replace('worker_order: [rev, impl]', '  - tier: Haiku medium\n    label: "Haiku medium"\n    role: "구현"\nworker_order: [rev, impl, w-implement-lite]'));
+    const cfgDir = path.join(root, '설정');
+    saveConfig({ ...defaultConfig(), kitRepoPath: repo }, cfgDir);
+    expect(readKit(repo).ok).toBe(true);
+    expect(workerModel(cfgDir, 'jh-kit:w-implement-lite')).toBe('haiku');
+    expect(workerModel(cfgDir, 'w-implement-lite')).toBe('haiku');
+    expect(workerModel(cfgDir, 'other-plugin:impl')).toBe('sonnet');
+    expect(workerModel(cfgDir, 'general-purpose')).toBeNull(); // 녹화 04 의 내장 에이전트
+    expect(workerModel(cfgDir, '')).toBeNull();
   });
 });
 

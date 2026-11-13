@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { TranscriptItem } from '../server/chatTypes.ts';
 import { listSessions, readTranscript, type HistoryOptions } from '../server/history.ts';
+import { summary, toolLabel } from '../web/src/Chat.tsx';
 import { APP, copyDir, inProcess } from './helpers.ts';
 
 const FIX = path.join(APP, 'test', 'fixtures', 'history');
@@ -137,6 +139,31 @@ describe('listSessions — 진짜 기록', () => {
     } finally { fs.rmSync(file); }
   });
 
+  // 제목 줄 표: 노트북(2.1.248) 실제 줄을 받으면 여기에 한 줄씩 더한다. title null = 첫 질문으로 남아야 함
+  const TITLE_CASES: { name: string; lines: any[]; title: string | null }[] = [
+    { name: 'type title + title 칸', lines: [{ type: 'title', title: 'X 제목' }], title: 'X 제목' },
+    { name: 'type session-title + aiTitle 칸', lines: [{ type: 'session-title', aiTitle: 'Y 제목' }], title: 'Y 제목' },
+    { name: 'type ai-title + title 칸', lines: [{ type: 'ai-title', title: 'Z 제목' }], title: 'Z 제목' },
+    { name: 'type summary + summary 칸', lines: [{ type: 'summary', summary: '요약 제목' }], title: '요약 제목' },
+    { name: 'custom 이 ai 보다 우선(ai 가 뒤에 와도)', lines: [{ type: 'custom-title', customTitle: '내 이름' }, { type: 'session-title', title: '나중 AI' }], title: '내 이름' },
+    { name: '빈 글자 칸은 건너뛰고 다음 칸', lines: [{ type: 'title', aiTitle: '  ', title: '두 번째 칸' }], title: '두 번째 칸' },
+    { name: '사람 메시지 안의 "title" 글자는 안 잡힘', lines: [{ type: 'user', title: '가짜', message: { role: 'user', content: 'set the title: 가짜 title' } }], title: null },
+    { name: 'type 에 title 이 없으면 title 칸이 있어도 안 잡힘', lines: [{ type: 'progress', title: '가짜' }], title: null },
+    { name: 'title 줄인데 글자 칸이 없음', lines: [{ type: 'ai-title', name: '다른 칸' }], title: null },
+  ];
+  it.each(TITLE_CASES)('제목 줄: $name', async ({ lines: extra, title }) => {
+    const sid = '76d66e6d-0000-4000-8000-0000000000ee';
+    const file = path.join(home, 'projects', DIR_F, `${sid}.jsonl`);
+    cloneSession(DIR_F, S76d6, DIR_F, sid, (ls) => [...ls, ...extra.map((l) => ({ ...l, sessionId: sid }))]);
+    try {
+      const all = await listSessions(F, opts());
+      const first = all.find((s) => s.id === S76d6)!;
+      const got = all.find((s) => s.id === sid)!;
+      if (title === null) expect(got).toMatchObject({ title: first.title, titleSource: 'first' });
+      else expect(got).toMatchObject({ title, titleSource: 'ai' });
+    } finally { fs.rmSync(file); }
+  });
+
   it('Windows: 대소문자·끝 구분자 무시, 한글 이름이 다르면 다른 프로젝트', async () => {
     const sid = '2959b2b6-0000-4000-8000-0000000000dd';
     const dir = 'C--Users-----Proj';
@@ -191,9 +218,9 @@ describe('readTranscript', () => {
     expect(t.map((x) => x.type)).toEqual(['user', 'answered', 'tools', 'answered', 'tools', 'assistant-text', 'user', 'assistant-text']);
     // 접두어 없이 내용만, outcome 으로 구분(화면이 "답함: "·"거부함: " 을 붙인다)
     expect(t[1]).toEqual({ type: 'answered', kind: 'question', summary: 'a.txt', outcome: 'answered' });
-    expect(t[2]).toEqual({ type: 'tools', names: ['Bash'], count: 4 });
+    expect(t[2]).toEqual({ type: 'tools', names: ['Bash'], count: 4, labels: ['Bash touch a.txt', 'Bash touch c.txt', 'Bash touch c.txt', 'Bash rm a.txt'] });
     expect(t[3]).toEqual({ type: 'answered', kind: 'permission', summary: 'Bash rm a.txt', outcome: 'denied' });
-    expect(t[4]).toEqual({ type: 'tools', names: ['Bash'], count: 1 });
+    expect(t[4]).toEqual({ type: 'tools', names: ['Bash'], count: 1, labels: ['Bash ls -la a.txt c.txt'] });
     expect(t[6]).toEqual({ type: 'user', text: 'Which file did I choose earlier? One word.', at: '2026-11-13T02:05:37.477Z' });
     expect(t[7]).toEqual({ type: 'assistant-text', text: 'a.txt', at: '2026-11-13T02:05:38.516Z' });
   });
@@ -210,7 +237,19 @@ describe('readTranscript', () => {
     const t = await readTranscript(F, S2959, opts());
     expect(t.map((x) => x.type)).toEqual(['user', 'assistant-text', 'answered', 'tools', 'assistant-text']);
     expect(t[2]).toEqual({ type: 'answered', kind: 'question', summary: '모드 없음', outcome: 'answered' });
-    expect(t[3]).toEqual({ type: 'tools', names: ['Bash', 'Read', 'Edit'], count: 3 });
+    expect(t[3]).toEqual({ type: 'tools', names: ['Bash', 'Read', 'Edit'], count: 3, labels: ['Bash head -n 3 README.md && git sta…', 'Read README.md', 'Edit README.md'] });
+  });
+
+  it('도구 줄 labels: Bash 줄에 명령이 들어가고, 채팅 화면 요약(toolLabel·summary)과 같은 글', async () => {
+    const t = await readTranscript(G, S01, opts());
+    const tools = t.filter((x) => x.type === 'tools') as Extract<TranscriptItem, { type: 'tools' }>[];
+    expect(tools[1].labels).toEqual(['Bash ls -la a.txt c.txt']);
+    // 기록 원문의 tool_use 입력으로 채팅 화면 규칙을 돌린 것과 같다
+    const raw = lines(path.join(FIX, 'projects', DIR_G, `${S01}.jsonl`))
+      .filter((l) => l.type === 'assistant' && !l.isSidechain && Array.isArray(l.message?.content))
+      .flatMap((l) => l.message.content.filter((b: any) => b.type === 'tool_use' && b.name !== 'AskUserQuestion'));
+    expect(tools.flatMap((x) => x.labels!)).toEqual(raw.map((b: any) => toolLabel(b.name, b.input)));
+    expect(summary(tools[1].labels!)).toBe('도구 1번 · Bash ls -la a.txt c.txt');
   });
 
   it('잘못된 sid 400, 다른 프로젝트 세션은 404', async () => {

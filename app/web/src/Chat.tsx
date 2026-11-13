@@ -6,6 +6,7 @@ import {
 import { PermissionCard, QuestionCard, UnknownCard, type Resolved } from './Cards';
 import { clock, LIMIT_WARN, limitGate, windowName } from './Limits';
 import { Markdown } from './Markdown';
+import { toolLabel } from '../../server/chatTypes';
 
 // ── 채팅 이벤트 → 화면 줄 (seq 순서대로 한 번씩 적용) ─────────────
 export interface ToolRun { id: string; name: string; input: unknown; result: { isError: boolean; text: string } | null }
@@ -91,21 +92,10 @@ export const pendingCard = (v: ChatView): Card | null => {
 };
 const live = (s: ChatState | null) => s === 'starting' || s === 'running' || s === 'waiting';
 
-// ── 도구 한 줄 요약 ───────────────────────────────────
-const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
-const base = (p: string) => p.split(/[\\/]/).pop() || p;
+// ── 도구 한 줄 요약 (규칙은 chatTypes toolLabel — 지난 기록과 같은 글) ───────
+export { toolLabel };
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
-export function toolLabel(name: string, input: unknown): string {
-  const i = isObj(input) ? input : {};
-  if (typeof i.file_path === 'string') return `${name} ${base(i.file_path)}`;
-  if (name === 'Grep' && typeof i.pattern === 'string') return `${name} "${cut(i.pattern, 30)}"`;
-  if (name === 'Glob' && typeof i.pattern === 'string') return `${name} ${cut(i.pattern, 30)}`;
-  if (name === 'Bash' && typeof i.command === 'string') return `${name} ${cut(i.command, 30)}`;
-  if (name === 'Agent' && typeof i.description === 'string') return `${name} ${cut(i.description, 30)}`;
-  if (name === 'Skill' && typeof i.skill === 'string') return `${name} ${i.skill}`;
-  return name;
-}
-const summary = (labels: string[]) => `도구 ${labels.length}번 · ${labels.slice(0, 4).join(', ')}${labels.length > 4 ? ' …' : ''}`;
+export const summary = (labels: string[]) => `도구 ${labels.length}번 · ${labels.slice(0, 4).join(', ')}${labels.length > 4 ? ' …' : ''}`;
 
 function Tools({ tools }: { tools: ToolRun[] }) {
   return (
@@ -124,6 +114,11 @@ function Tools({ tools }: { tools: ToolRun[] }) {
 }
 
 const shortWorker = (w: string) => w.replace(/^[^:]+:/, '');
+// 워커 모델 칩. 채팅 워커 표와 왼쪽 작동 중이 같이 쓴다. 모델이 없으면 안 그린다
+const modelClass = (m: string) => /opus|sonnet|haiku|fable/.exec(m)?.[0] ?? '';
+export function ModelChip({ model }: { model: string | null }) {
+  return model ? <span className={`chip ${modelClass(model)}`} data-testid="model-chip">{model}</span> : null;
+}
 export function elapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -143,6 +138,7 @@ function Workers({ ids, workers, now }: { ids: string[]; workers: Record<string,
           <div key={id} role="row" className="wrow-chat" data-state={w.state} data-testid="worker-run">
             <span role="cell" className={`dot ${w.state}`} aria-hidden="true" />
             <span role="cell" className="mono wname">{shortWorker(w.worker) || '[워커]'}</span>
+            {w.model && <span role="cell"><ModelChip model={w.model} /></span>}
             <span role="cell" className="wdesc">{w.description ?? ''}{w.background ? ' (백그라운드)' : ''}</span>
             <span role="cell" className="wstate">{workerState(w, now)}</span>
           </div>
@@ -170,7 +166,11 @@ function PastItems({ items }: { items: TranscriptItem[] }) {
     if (prevUser) out.push(<ClaudeLabel key={`l${i}`} />);
     prevUser = false;
     if (it.type === 'assistant-text') out.push(<Markdown key={i} text={it.text} />);
-    else if (it.type === 'tools') out.push(<details key={i} className="tools"><summary>{summary(it.names)}</summary><div className="tools-body mono">{it.names.join(', ')}</div></details>);
+    else if (it.type === 'tools') {
+      // labels(호출마다 "Bash ls")가 있으면 그것을, 없으면(옛 서버) 이름만
+      const labels = it.labels ?? it.names;
+      out.push(<details key={i} className="tools" data-testid="past-tools"><summary>{summary(labels)}</summary><div className="tools-body mono">{labels.join(', ')}</div></details>);
+    }
     else out.push(<span key={i} className="answered" data-testid="past-answered">{answeredLabel(it)}</span>);
   });
   return <div className="past" data-testid="past-transcript">{out}</div>;
