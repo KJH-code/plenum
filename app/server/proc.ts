@@ -133,7 +133,8 @@ export async function procStartTime(pid: number, platform = process.platform): P
 export function isPlenumChatCommandLine(cl: string): boolean {
   if (!cl) return false;
   if (/AnthropicClaude|Claude\.app\/Contents/i.test(cl)) return false;
-  return /--input-format[\s=]+stream-json/.test(cl) && /--permission-prompt-tool[\s=]+stdio/.test(cl);
+  // 인자와 값 사이: 공백·= 뿐 아니라 따옴표도 — Windows .cmd(npm claude.cmd)는 commandFor 가 인자마다 따옴표로 감싸 cmd.exe 명령줄이 "--input-format" "stream-json" 꼴이 된다(CI #17 windows 에서 잡힘)
+  return /--input-format["'\s=]+stream-json/.test(cl) && /--permission-prompt-tool["'\s=]+stdio/.test(cl);
 }
 
 async function commandLine(pid: number, platform: NodeJS.Platform): Promise<string> {

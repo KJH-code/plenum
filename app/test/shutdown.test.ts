@@ -277,7 +277,10 @@ it('isPlenumChatCommandLine: 채팅 인자가 있는 claude 만, 데스크톱 �
   const chat = '-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio --permission-mode default';
   // Windows: winget claude.exe, npm claude.cmd 를 감싼 cmd.exe
   expect(isPlenumChatCommandLine(`"C:\\Users\\홍길동\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe" ${chat}`)).toBe(true);
-  expect(isPlenumChatCommandLine(`C:\\Windows\\system32\\cmd.exe /d /s /c ""C:\\Users\\홍길동\\AppData\\Roaming\\npm\\claude.cmd" ${chat}"`)).toBe(true);
+  // npm claude.cmd: 진짜 commandFor 가 만드는 cmd.exe 명령줄(인자마다 따옴표) 그대로 — 손으로 쓴 따옴표 없는 명령줄로는 Windows 에서만 깨지는 걸 못 잡았다(CI #17)
+  const viaCmd = commandFor('C:\\Users\\홍길동\\AppData\\Roaming\\npm\\claude.cmd', chatArgs({ model: 'haiku' }), 'win32');
+  expect(viaCmd.args.join(' ')).toContain('"--input-format" "stream-json"');
+  expect(isPlenumChatCommandLine(`C:\\Windows\\system32\\cmd.exe ${viaCmd.args.join(' ')}`)).toBe(true);
   expect(isPlenumChatCommandLine(`/usr/local/bin/node /usr/local/bin/claude ${chat}`)).toBe(true);
   // Claude 데스크톱 앱 (Windows·macOS) — 인자가 섞여 있어도 아니다
   expect(isPlenumChatCommandLine('"C:\\Users\\홍길동\\AppData\\Local\\AnthropicClaude\\app-1.2.3\\claude.exe"')).toBe(false);
