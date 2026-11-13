@@ -4,7 +4,7 @@ import { workerState } from './Chat';
 
 export const MODELS = ['', 'opus', 'sonnet', 'haiku'];
 export const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
-const DEFAULT_LABEL = 'Claude Code 설정';
+export const DEFAULT_LABEL = '기본값';
 
 // ISO → "HH:MM"(오늘) · "어제 HH:MM" · "MM-DD"
 export function when(iso: string | null, now = Date.now()): string {

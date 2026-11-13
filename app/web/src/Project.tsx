@@ -187,7 +187,8 @@ export function ProjectPage({ id }: { id: string }) {
         )}
         {target ? (
           <Chat key={targetKey} projectId={p.id} projectPath={p.path} target={target} sessions={sessions ?? []} chats={chats} limits={limits}
-            newOptions={newOptions} onLimits={setLimits} onChanged={refresh} onTerminal={(sid) => { void openTerminal(sid); }} />
+            newOptions={newOptions} onLimits={setLimits} onChanged={refresh} onTerminal={(sid) => { void openTerminal(sid); }}
+            onOpenChat={(chatId, draft) => { setPicked(null); go({ kind: 'chat', chatId, ...(draft ? { draft } : {}) }); }} />
         ) : <main className="pmain"><p className="hint" style={{ padding: 20 }}>불러오는 중…</p></main>}
       </div>
       {term && <TerminalDialog projectId={p.id} sid={term.sid} chatLive={term.chatLive} onClose={() => setTerm(null)} onDone={refresh} />}

@@ -1,4 +1,5 @@
 import type { LimitWindow, Limits } from './api';
+export { limitGate } from '../../server/chatTypes';
 
 // 유닉스 초 → "HH:MM" (오늘이 아니면 "MM-DD HH:MM")
 export function clock(sec: number, now = Date.now()): string {
@@ -9,13 +10,8 @@ export function clock(sec: number, now = Date.now()): string {
 }
 export const windowName = (w: string) => (w === 'five_hour' ? '5시간' : w === 'seven_day' ? '주간' : w);
 
-// 지금 막혀 있는 한도 (리셋 시각이 지났으면 아님)
-export function activeRejection(l: Limits | null, now = Date.now()): Limits['rejected'] {
-  const r = l?.rejected;
-  if (!r) return null;
-  if (r.resetsAt !== null && r.resetsAt * 1000 <= now) return null;
-  return r;
-}
+// 한도 신호는 왔지만 리셋 시각을 모를 때(limitGate warn) 입력창 위에 보이는 줄. 서버 경고(같은 말로 시작)와 겹치면 하나만
+export const LIMIT_WARN = '사용 한도에 걸렸다는 신호가 왔지만 리셋 시각을 모른다';
 
 function Bar({ name, w }: { name: string; w: LimitWindow | undefined }) {
   const pct = w ? Math.max(0, Math.min(100, w.pct)) : 0;
