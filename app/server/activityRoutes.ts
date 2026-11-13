@@ -1,7 +1,7 @@
 // 작동 중·훅·터미널로 열기 라우트.
 //   POST /api/hook                                      훅 알림 (틀린 본문도 200 — 훅은 실패를 무시한다)
 //   GET  /api/projects/:id/activity                     ProjectActivity
-//   POST /api/projects/:id/sessions/:sid/terminal       (돌고 있는 채팅을 끝까지 닫고) 외부 터미널에서 claude --resume
+//   POST /api/projects/:id/sessions/:sid/terminal       (명령을 먼저 만들고, 돌고 있는 채팅을 끝까지 닫고) 외부 터미널에서 claude --resume
 //   POST /api/projects/:id/sessions/:sid/forget-terminal 터미널 세션을 현황에서 바로 뺀다("이미 닫았다")
 import type { RouteCtx } from './app.ts';
 import type { Activity } from './activity.ts';
@@ -49,16 +49,17 @@ export async function handleActivity(ctx: RouteCtx, deps: ActivityDeps): Promise
     }
     if (e === 'terminal') {
       const p = findProject(ctx.cfg, b);
-      // 같은 세션을 두 프로세스가 이어 쓰지 않게: 채팅을 먼저 끝까지 닫는다
+      // 명령부터 만든다 — 못 만들면(400) 채팅은 그대로 둔다
+      let t;
+      try { t = terminalCommand({ cwd: p.path, sessionId: d, platform: deps.platform, env: ctx.env, isFile: deps.isFile }); }
+      catch (err: any) { throw new UserError(400, err.message); }
+      // 같은 세션을 두 프로세스가 이어 쓰지 않게: 채팅을 끝까지 닫은 뒤 띄운다
       let closedChat = false;
       const chat = deps.chats?.findBySession(d) ?? null;
       if (chat && chat.state !== 'ended') {
         await deps.chats!.close(chat.chatId);
         closedChat = true;
       }
-      let t;
-      try { t = terminalCommand({ cwd: p.path, sessionId: d, platform: deps.platform, env: ctx.env, isFile: deps.isFile }); }
-      catch (err: any) { throw new UserError(400, err.message); }
       if (!t.command) {
         ctx.send(200, { closedChat, launched: false, via: t.via, display: t.display, message: TRUST_HINT });
         return true;

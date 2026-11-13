@@ -85,11 +85,26 @@ describe('listSessions — 진짜 기록', () => {
     } finally { fs.rmSync(path.join(home, 'projects', DIR_F, `${sid}.jsonl`)); }
   });
 
-  it('첫 질문이 <command-name> 이면 목록에서 뺀다', async () => {
+  // 4b6b568b: 사람 줄은 2줄(질문)·18줄("[Request interrupted by user]") 둘. 명령 줄 = <command-name> 으로 시작하는 사람 메시지
+  const USAGE = '<command-name>/usage</command-name>\n<command-message>usage</command-message>\n<command-args></command-args>';
+  const MODEL = '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>';
+  const asText = (l: any, content: string) => ({ ...l, message: { ...l.message, content } });
+
+  it('명령 줄만 있는 세션(/usage 만)은 목록에서 뺀다', async () => {
     const sid = '4b6b568b-0000-4000-8000-0000000000bb';
-    cloneSession(DIR_F, S4b6b, DIR_F, sid, (ls) => ls.map((l, i) => (i === 2 ? { ...l, message: { ...l.message, content: '<command-name>/usage</command-name>\n<command-message>usage</command-message>\n<command-args></command-args>' } } : l)));
+    // 2줄을 /usage 로, 18줄(다른 사람 줄)은 지운다 → 진짜 사람 메시지 0
+    cloneSession(DIR_F, S4b6b, DIR_F, sid, (ls) => ls.map((l, i) => (i === 2 ? asText(l, USAGE) : l)).filter((_l, i) => i !== 18));
     try {
       expect((await listSessions(F, opts())).map((s) => s.id)).not.toContain(sid);
+    } finally { fs.rmSync(path.join(home, 'projects', DIR_F, `${sid}.jsonl`)); }
+  });
+
+  it('명령 줄(/model) 뒤 진짜 질문이 있으면 목록에 있고 제목은 그 질문', async () => {
+    const sid = '4b6b568b-0000-4000-8000-0000000000be';
+    // [/model, "버그 고쳐줘", (18줄)] — 2줄을 /model 로 바꾸고 바로 뒤에 같은 모양의 사람 줄을 넣는다
+    cloneSession(DIR_F, S4b6b, DIR_F, sid, (ls) => ls.flatMap((l, i) => (i === 2 ? [asText(l, MODEL), asText({ ...l, uuid: 'u-bug' }, '버그 고쳐줘')] : [l])));
+    try {
+      expect((await listSessions(F, opts())).find((s) => s.id === sid)).toMatchObject({ title: '버그 고쳐줘', titleSource: 'first' });
     } finally { fs.rmSync(path.join(home, 'projects', DIR_F, `${sid}.jsonl`)); }
   });
 
@@ -157,9 +172,10 @@ describe('readTranscript', () => {
     // 2줄 사람 → 20줄 AskUserQuestion(21줄 answers "a.txt (Recommended)") → 27·29·33·36줄 Bash 4번 → 37줄 rm 거부(permissionDecision user_reject)
     // → 40줄 Bash ls → 44줄 글 → 49줄 사람 → 53줄 글
     expect(t.map((x) => x.type)).toEqual(['user', 'answered', 'tools', 'answered', 'tools', 'assistant-text', 'user', 'assistant-text']);
-    expect(t[1]).toEqual({ type: 'answered', kind: 'question', summary: '답함: a.txt' });
+    // 접두어 없이 내용만, outcome 으로 구분(화면이 "답함: "·"거부함: " 을 붙인다)
+    expect(t[1]).toEqual({ type: 'answered', kind: 'question', summary: 'a.txt', outcome: 'answered' });
     expect(t[2]).toEqual({ type: 'tools', names: ['Bash'], count: 4 });
-    expect(t[3]).toEqual({ type: 'answered', kind: 'permission', summary: '거부함: Bash rm a.txt' });
+    expect(t[3]).toEqual({ type: 'answered', kind: 'permission', summary: 'Bash rm a.txt', outcome: 'denied' });
     expect(t[4]).toEqual({ type: 'tools', names: ['Bash'], count: 1 });
     expect(t[6]).toEqual({ type: 'user', text: 'Which file did I choose earlier? One word.', at: '2026-11-13T02:05:37.477Z' });
     expect(t[7]).toEqual({ type: 'assistant-text', text: 'a.txt', at: '2026-11-13T02:05:38.516Z' });
@@ -176,7 +192,7 @@ describe('readTranscript', () => {
   it('모드 질문 답, 연속 도구 이름은 순서 유지 중복 제거', async () => {
     const t = await readTranscript(F, S2959, opts());
     expect(t.map((x) => x.type)).toEqual(['user', 'assistant-text', 'answered', 'tools', 'assistant-text']);
-    expect(t[2]).toMatchObject({ summary: '답함: 모드 없음' });
+    expect(t[2]).toEqual({ type: 'answered', kind: 'question', summary: '모드 없음', outcome: 'answered' });
     expect(t[3]).toEqual({ type: 'tools', names: ['Bash', 'Read', 'Edit'], count: 3 });
   });
 

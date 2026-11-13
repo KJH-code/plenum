@@ -7,7 +7,7 @@ import { StringDecoder } from 'node:string_decoder';
 import {
   MIN_CLAUDE_VERSION, modeFromAnswer, modeFromSkill,
   type Card, type CardReply, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
-  type ModeName, type Question, type SessionRule, type WorkerRun,
+  type ModeName, type Question, type SessionRule, type WorkerRun, limitGate,
 } from './chatTypes.ts';
 import { claudeCaps, type ClaudeCaps } from './claudecaps.ts';
 import { UserError } from './errors.ts';
@@ -21,6 +21,7 @@ export interface ChatDeps {
   caps(): Promise<ClaudeCaps>;                             // --effort 지원 여부 (effort 를 줄 때만 본다)
 }
 export interface StartOptions { text: string; model?: string; effort?: string; resume?: string }
+export interface StartResult { chat: ChatInfo; warnings: string[]; forwarded?: boolean }
 export interface ChatManagerOptions {
   cfgDir: string;
   env: NodeJS.ProcessEnv;
@@ -32,7 +33,8 @@ export interface ChatManagerOptions {
 type EventBody = ChatEvent extends infer E ? (E extends any ? Omit<E, 'seq' | 'at'> : never) : never;
 
 export interface ChatManager extends ChatRegistry {
-  start(project: { id: string; path: string }, opts: StartOptions): Promise<{ chat: ChatInfo; warnings: string[] }>;
+  // 이어하기 대상이 이미 살아 있는 채팅이면 글을 그 채팅에 보내고 forwarded: true
+  start(project: { id: string; path: string }, opts: StartOptions): Promise<StartResult>;
   respond(chatId: string, reply: CardReply): ChatInfo;
   send(chatId: string, text: string): { chat: ChatInfo; warnings: string[] };
   interrupt(chatId: string): ChatInfo;
@@ -49,6 +51,8 @@ const MODEL_RE = /^[a-z0-9.\-\[\]]{1,60}$/i;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONCURRENT = '같은 프로젝트에서 응답 중인 세션이 있다 — 같은 파일을 동시에 고칠 수 있다';
 const SHUTDOWN_CAP_MS = 10000;
+export const LIMIT_UNKNOWN_RESET = '사용 한도에 걸렸다는 신호가 왔지만 리셋 시각을 모른다 — 보내기는 막지 않는다';
+const CARD_PENDING = '답을 기다리는 카드가 있다 — 그 채팅에서 먼저 답하기';
 
 // "2.1.248" 비교. 숫자가 아닌 꼬리는 버린다
 export function compareVersion(a: string, b: string): number {
@@ -152,20 +156,24 @@ function sessionRulesFrom(suggestions: unknown): SessionRule[] {
 
 // claude 실행 인자 (테스트가 모양을 본다)
 export function chatArgs(o: { model?: string; effort?: string; resume?: string }): string[] {
-  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio'];
+  // --permission-mode default: 사용자 설정의 defaultMode(acceptEdits 등)가 채팅에 새지 않게 명시한다
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio', '--permission-mode', 'default'];
   if (o.model) args.push('--model', o.model);
   if (o.effort) args.push('--effort', o.effort);
   if (o.resume) args.push('--resume', o.resume);
   return args;
 }
 
-// 받은 env 에서 지금 세션 표시만 뺀다 (Plenum 을 Claude Code 안에서 띄웠을 때 자식이 그 세션으로 착각하지 않게)
+// 받은 env 에서 지금 세션 표시만 뺀다 (Plenum 을 Claude Code 안에서 띄웠을 때 자식이 그 세션으로 착각하지 않게).
+// PLENUM_NOTIFY=0: 채팅 claude 의 훅이 Plenum 에 알리지 않게 한다(jh-kit 2.2.0 훅). init 보다 먼저 온 SessionStart 가
+// 터미널 세션으로 잡혀 유령이 되는 것 방지. 새 객체에만 넣는다 — 서버·터미널 env 는 그대로
 export function chatEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(env)) {
     if (k === 'CLAUDE_CODE_SESSION_ID' || k === 'CLAUDE_CODE_REMOTE_SESSION_ID') continue;
     out[k] = v;
   }
+  out.PLENUM_NOTIFY = '0';
   return out;
 }
 
@@ -226,6 +234,15 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       }
     }
     return [];
+  }
+  // 한도 규칙(limitGate): blocked → 429, warn → 막지 않고 경고(warnings + notice). c 가 없으면 검사만
+  function gate(): string[] {
+    const g = limitGate(limits);
+    if (g.kind === 'blocked') throw new UserError(429, `사용 한도에 걸렸다 — ${new Date(g.resetsAt * 1000).toISOString()} 이후에 다시`);
+    return g.kind === 'warn' ? [LIMIT_UNKNOWN_RESET] : [];
+  }
+  function warnLimit(c: Chat, warnings: string[]) {
+    if (warnings.includes(LIMIT_UNKNOWN_RESET)) emit(c, { type: 'notice', level: 'warn', code: 'limit-rejected', message: LIMIT_UNKNOWN_RESET });
   }
   function sendUser(c: Chat, text: string) {
     write(c, { type: 'user', message: { role: 'user', content: text } });
@@ -384,7 +401,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   }
 
   // effort 를 주면 이 claude 가 --effort 를 아는지 먼저 본다(노트북 2.1.248 에는 없을 수 있다). 나머지는 startNow 가 동기로
-  async function start(project: { id: string; path: string }, opts: StartOptions): Promise<{ chat: ChatInfo; warnings: string[] }> {
+  async function start(project: { id: string; path: string }, opts: StartOptions): Promise<StartResult> {
     const effort = opts?.effort ?? undefined;
     if (effort !== undefined && typeof effort === 'string' && EFFORTS.includes(effort)) {
       const caps = await deps.caps();
@@ -393,7 +410,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     return startNow(project, opts);
   }
 
-  function startNow(project: { id: string; path: string }, opts: StartOptions): { chat: ChatInfo; warnings: string[] } {
+  function startNow(project: { id: string; path: string }, opts: StartOptions): StartResult {
     const text = typeof opts.text === 'string' ? opts.text : '';
     if (!text.trim()) throw new UserError(400, '보낼 글이 비어 있다');
     const model = opts.model ?? undefined;
@@ -403,11 +420,15 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     if (effort !== undefined && (typeof effort !== 'string' || !EFFORTS.includes(effort))) throw new UserError(400, `effort 는 ${EFFORTS.join('·')} 중 하나: ${String(effort)}`);
     if (resume !== undefined && (typeof resume !== 'string' || !UUID_RE.test(resume))) throw new UserError(400, `세션 ID 모양이 아니다: ${String(resume)}`);
     if (resume) {
-      for (const c of chats.values()) {
-        if (c.info.sessionId === resume && c.info.state !== 'ended') return { chat: info(c), warnings: [] };
+      // 이미 살아 있는 채팅이면 새로 띄우지 않고 글을 그 채팅에 보낸다(카드가 답을 기다리면 보내지 않음)
+      const live = liveBySession(resume);
+      if (live) {
+        if (pendingCount(live)) throw new UserError(409, CARD_PENDING);
+        return { ...send(live.info.chatId, text), forwarded: true };
       }
       if (deps.terminalAlive(resume)) throw new UserError(409, '이 세션은 터미널에서 열려 있다 — 터미널을 닫고 다시');
     }
+    const limitWarnings = gate();
     const resolved = resolveCommand('claude', env, platform);
     if (!resolved) throw new UserError(400, 'claude 를 PATH 에서 못 찾았다 — Claude Code 를 설치하고 Plenum 을 다시 시작');
     let cmd;
@@ -424,7 +445,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       lastMessageId: null, intN: 0, closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
     };
     chats.set(chatId, c);
-    if (child.pid) { try { addPid(cfgDir, child.pid); } catch { /* 무시 */ } }
+    if (child.pid) { try { addPid(cfgDir, child.pid, { platform }).catch(() => {}); } catch { /* 무시 */ } }
     emit(c, { type: 'state', state: 'starting' });
 
     const dec = new StringDecoder('utf8');
@@ -464,7 +485,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
 
     write(c, { type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } });
     sendUser(c, text);
-    const warnings = concurrent(c);
+    warnLimit(c, limitWarnings);
+    const warnings = [...limitWarnings, ...concurrent(c)];
     return { chat: info(c), warnings };
   }
 
@@ -522,16 +544,20 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     return info(c);
   }
 
+  function liveBySession(sessionId: string): Chat | null {
+    for (const c of chats.values()) if (c.info.sessionId === sessionId && c.info.state !== 'ended') return c;
+    return null;
+  }
+
   function send(chatId: string, text: string) {
     const c = must(chatId);
     if (typeof text !== 'string' || !text.trim()) throw new UserError(400, '보낼 글이 비어 있다');
     if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다 — 새로 시작하거나 이어하기');
-    if (limits?.rejected && limits.rejected.resetsAt && limits.rejected.resetsAt * 1000 > Date.now()) {
-      throw new UserError(429, `사용 한도에 걸렸다 — ${new Date(limits.rejected.resetsAt * 1000).toISOString()} 이후에 다시`);
-    }
+    const limitWarnings = gate();
     sendUser(c, text);
     setState(c, pendingCount(c) ? 'waiting' : 'running');
-    const warnings = concurrent(c);
+    warnLimit(c, limitWarnings);
+    const warnings = [...limitWarnings, ...concurrent(c)];
     return { chat: info(c), warnings };
   }
 
@@ -600,12 +626,9 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     onEvent(listener) { globalListeners.add(listener); return () => { globalListeners.delete(listener); }; },
     list: (projectId) => [...chats.values()].filter((c) => c.projectId === projectId && c.info.state !== 'ended').map(info),
     get: (chatId) => { const c = chats.get(chatId); return c ? info(c) : null; },
-    findBySession(sessionId) {
-      let found: Chat | null = null;
-      for (const c of chats.values()) if (c.info.sessionId === sessionId && (!found || c.info.state !== 'ended')) found = c;
-      return found ? info(found) : null;
-    },
-    isPlenumChat: (sessionId) => [...chats.values()].some((c) => c.info.sessionId === sessionId && c.info.state !== 'ended'),
+    // 살아 있는(ended 아님) 채팅만. 끝난 채팅은 지난 세션 목록의 running·터미널로 열기·이어하기에서 없는 것으로 본다
+    findBySession(sessionId) { const c = liveBySession(sessionId); return c ? info(c) : null; },
+    isPlenumChat: (sessionId) => liveBySession(sessionId) !== null,
     getLimits: () => limits,
   };
 }

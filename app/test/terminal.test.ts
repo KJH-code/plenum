@@ -128,6 +128,17 @@ describe('POST /api/projects/:id/sessions/:sid/terminal', () => {
     expect(sent[0]).toMatchObject({ status: 200, body: { launched: false, via: 'manual', display: [`cd '/tmp/홍길동 프로젝트'`, `claude --resume ${SID}`] } });
   });
 
+  test('명령을 못 만들면(wt 없음 + % 든 경로) 400 이고 채팅은 닫지 않는다', async () => {
+    const calls: string[] = [];
+    const chats = fakeChats(calls, true);
+    const launcher = async () => { calls.push('launch'); return { ok: true as const }; };
+    const { ctx, sent } = fakeCtx('POST', ['projects', 'p1', 'sessions', SID, 'terminal'], 'C:\\Users\\홍길동\\100%');
+    await expect(handleActivity(ctx, { activity: createActivity({ cfgDir: tmpDir(), chats }), chats, launcher, platform: 'win32', isFile: noWt })).rejects.toMatchObject({ status: 400 });
+    expect(calls).toEqual([]); // close·launch 둘 다 안 함
+    expect(chats.findBySession(SID)!.state).not.toBe('ended');
+    expect(sent).toEqual([]);
+  });
+
   test('세션 ID 가 이상하면 400, 실행 안 함', async () => {
     let called = false;
     const launcher = async () => { called = true; return { ok: true as const }; };
