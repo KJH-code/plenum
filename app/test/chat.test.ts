@@ -5,9 +5,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { chatArgs, createChatManager, type ChatManager } from '../server/chat.ts';
+import { chatArgs, chatEnv, createChatManager, LIMIT_UNKNOWN_RESET, type ChatManager } from '../server/chat.ts';
 import type { Card, ChatEvent } from '../server/chatTypes.ts';
-import { readLimits, readSessions } from '../server/store.ts';
+import { readLimits, readSessions, saveLimits } from '../server/store.ts';
 import { makeFakeStreamClaude, writeScript, type FakeStreamClaude } from './fakeclaudeStream.ts';
 import { APP, inProcess } from './helpers.ts';
 
@@ -50,6 +50,12 @@ function events(m: ChatManager, chatId: string): ChatEvent[] {
   const out: ChatEvent[] = [];
   m.subscribe(chatId, 0, (e) => out.push(e))();
   return out;
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function until(f: () => boolean, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!f()) { if (Date.now() > end) return false; await sleep(20); }
+  return true;
 }
 const nextCard = async (m: ChatManager, chatId: string, after: number) => (await waitEvent(m, chatId, 'card', () => true, after));
 
@@ -129,6 +135,17 @@ describe('녹화 재생', () => {
     expect(call.args).not.toContain('--bare');
     expect(fs.realpathSync(call.cwd)).toBe(fs.realpathSync(s.project.path));
     expect(call.sessionEnv).toEqual([null, null]);
+    // 채팅 claude 에만 PLENUM_NOTIFY=0 (훅이 Plenum 에 안 알리게), 사용자 defaultMode 가 새지 않게 --permission-mode default
+    expect(call.notify).toBe('0');
+    expect(call.args.join(' ')).toContain('--permission-mode default');
+
+    // "이 세션 동안 허용" 은 세션에만: 보낸 updatedPermissions 의 destination 이 전부 session, localSettings 없음.
+    // 가짜는 파일을 안 쓰므로 destination 단언이 핵심이고 .claude 폴더 단언은 보조(진짜 claude 실측은 노트북 확인 항목)
+    const ups = sent.filter((x) => x.type === 'control_response').flatMap((x) => x.response.response?.updatedPermissions ?? []);
+    expect(ups.length).toBeGreaterThan(0);
+    expect(ups.map((u: any) => u.destination)).toEqual(ups.map(() => 'session'));
+    expect(JSON.stringify(sent)).not.toContain('localSettings');
+    expect(fs.existsSync(path.join(s.project.path, '.claude'))).toBe(false);
 
     await m.close(id);
     expect(m.get(id)!.state).toBe('ended');
@@ -236,27 +253,58 @@ describe('합성 대본', () => {
     await expect(Promise.resolve().then(() => m.respond(id, { requestId: 'nope', action: 'allow' }))).rejects.toMatchObject({ status: 404 });
   });
 
-  it('한도 rejected → send 429, 리셋이 지났으면 보낸다', async () => {
+  // 한도 규칙(limitGate): 대본이 rate_limit_event(rejected, resetsAt) 를 낸 뒤 다음 user 를 기다린다
+  async function limitChat(resetsAt: number | null) {
     const s = setup();
     const file = path.join(s.root, 'limit.jsonl');
-    const reset = Math.floor(Date.now() / 1000) + 3600;
+    const w: any = { utilization: 1, status: 'rejected', ...(resetsAt !== null ? { resetsAt } : {}) };
     writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') },
-      { dir: 'out', msg: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: reset, rateLimitType: 'five_hour', unifiedWindows: { five_hour: { utilization: 1, resetsAt: reset, status: 'rejected' } } } } },
-      { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+      { dir: 'out', msg: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', ...(resetsAt !== null ? { resetsAt } : {}), rateLimitType: 'five_hour', unifiedWindows: { five_hour: w } } } },
+      { dir: 'out', msg: RESULT }, { dir: 'in', msg: { type: 'user' } }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m = manager(s, s.fake.env({ script: file }));
-    const id = (await m.start(s.project, { text: '안녕' })).chat.chatId;
+    const st = await m.start(s.project, { text: '안녕' });
+    const id = st.chat.chatId;
     const l = await waitEvent(m, id, 'limits');
-    expect(l.limits.rejected).toEqual({ window: 'five_hour', resetsAt: reset });
-    expect(l.limits.fiveHour!.pct).toBe(100);
-    expect(l.limits.sevenDay).toBeUndefined();
+    expect(l.limits.rejected).toEqual({ window: 'five_hour', resetsAt });
     await waitEvent(m, id, 'result');
+    return { s, m, id, start: st };
+  }
+  const statusOf = async (f: () => unknown) => { try { await f(); return 0; } catch (e: any) { return e.status; } };
+
+  it('한도: 리셋이 미래 → send·start(새 채팅·이어하기) 429, 새 매니저도 파일 값으로 막는다', async () => {
+    const reset = Math.floor(Date.now() / 1000) + 3600;
+    const { s, m, id } = await limitChat(reset);
     let err: any;
     try { m.send(id, '또'); } catch (e) { err = e; }
     expect(err.status).toBe(429);
     expect(err.message).toContain(new Date(reset * 1000).toISOString());
-    // 파일에서 읽은 마지막 값으로 시작하는 새 매니저도 막는다
+    const calls = s.fake.argsCalls().length;
+    expect(await statusOf(() => m.start(s.project, { text: '새로' }))).toBe(429);
+    expect(await statusOf(() => m.start(s.project, { text: '이어', resume: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))).toBe(429);
+    expect(s.fake.argsCalls()).toHaveLength(calls); // 띄우지 않음
     const m2 = manager(s, s.fake.env());
     expect(m2.getLimits()!.rejected!.resetsAt).toBe(reset);
+    expect(await statusOf(() => m2.start(s.project, { text: '새로' }))).toBe(429);
+  });
+
+  it('한도: rejected 인데 리셋 시각을 모름 → 막지 않고 경고(warnings + notice warn), start 도 같다', async () => {
+    const { s, m, id } = await limitChat(null);
+    const before = m.get(id)!.lastSeq;
+    const r = m.send(id, '또');
+    expect(r.warnings).toEqual([LIMIT_UNKNOWN_RESET]);
+    const n = await waitEvent(m, id, 'notice', (e) => e.message === LIMIT_UNKNOWN_RESET, before);
+    expect(n).toMatchObject({ level: 'warn', code: 'limit-rejected' });
+    await waitEvent(m, id, 'result', () => true, before);
+    expect(s.fake.stdin().filter((x) => x.type === 'user').map((x) => x.message.content)).toEqual(['안녕', '또']);
+    // 새 채팅도 띄우고 경고
+    const st = await m.start({ id: 'p2', path: s.project.path }, { text: '새로' });
+    expect(st.warnings).toEqual([LIMIT_UNKNOWN_RESET]);
+    expect(events(m, st.chat.chatId).some((e) => e.type === 'notice' && e.message === LIMIT_UNKNOWN_RESET)).toBe(true);
+  });
+
+  it('한도: 리셋 시각이 지났으면 막지도 경고하지도 않는다', async () => {
+    const { m, id } = await limitChat(Math.floor(Date.now() / 1000) - 60);
+    expect(m.send(id, '또').warnings).toEqual([]);
   });
 
   it('버전 2.1.200 → version-old notice (경고만)', async () => {
@@ -299,7 +347,7 @@ describe('합성 대본', () => {
     expect(m.list('p1').map((c) => c.chatId).sort()).toEqual([a.chat.chatId, b.chat.chatId].sort());
   });
 
-  it('resume: 인자 검사, 터미널에서 열려 있으면 409, 이미 도는 채팅이면 그것을 돌려줌', async () => {
+  it('resume: 인자 검사, 터미널에서 열려 있으면 409, 이미 도는 채팅이면 글을 그 채팅에 보내고 그것을 돌려줌', async () => {
     const s = setup();
     const sid = 'b5b49096-5604-499f-a80b-49f35d8d09bb';
     const file = path.join(s.root, 'resume.jsonl');
@@ -316,11 +364,36 @@ describe('합성 대본', () => {
     expect(s.fake.argsCalls()).toHaveLength(0);
     const a = await m.start(s.project, { text: '이어', resume: sid, model: 'claude-opus-5-5[1m]', effort: 'max' });
     expect(a.chat.sessionId).toBe(sid);
+    expect(a.forwarded).toBeUndefined();
+    await waitEvent(m, a.chat.chatId, 'init');
     const b = await m.start(s.project, { text: '또', resume: sid });
     expect(b.chat.chatId).toBe(a.chat.chatId);
-    await waitEvent(m, a.chat.chatId, 'init');
+    expect(b.forwarded).toBe(true);
+    expect(events(m, a.chat.chatId).filter((e) => e.type === 'user').map((e: any) => e.text)).toEqual(['이어', '또']);
+    expect(await until(() => s.fake.stdin().filter((x) => x.type === 'user').length === 2)).toBe(true);
+    expect(s.fake.stdin().filter((x) => x.type === 'user').map((x) => x.message.content)).toEqual(['이어', '또']);
     expect(s.fake.argsCalls()).toHaveLength(1);
     expect(s.fake.argsCalls()[0].args.slice(-6)).toEqual(['--model', 'claude-opus-5-5[1m]', '--effort', 'max', '--resume', sid]);
+  });
+
+  it('resume: 이어할 채팅이 카드 답을 기다리면 409, 글은 보내지 않음', async () => {
+    const s = setup();
+    const sid = 'b5b49096-5604-499f-a80b-49f35d8d09bb';
+    const file = path.join(s.root, 'waiting.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', sid) },
+      { dir: 'out', msg: { type: 'control_request', request_id: 'r-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' }, permission_suggestions: [] } } },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'r-1' } } }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const a = await m.start(s.project, { text: '처음' });
+    await waitEvent(m, a.chat.chatId, 'card');
+    expect(m.get(a.chat.chatId)!.state).toBe('waiting');
+    let err: any;
+    try { await m.start(s.project, { text: '버려지면 안 되는 글', resume: sid }); } catch (e) { err = e; }
+    expect(err.status).toBe(409);
+    expect(err.message).toContain('답을 기다리는 카드가 있다');
+    expect(events(m, a.chat.chatId).filter((e) => e.type === 'user').map((e: any) => e.text)).toEqual(['처음']);
+    expect(s.fake.stdin().filter((x) => x.type === 'user')).toHaveLength(1);
+    expect(s.fake.argsCalls()).toHaveLength(1);
   });
 
   it('PATH 에 claude 가 없으면 400', async () => {
@@ -433,6 +506,81 @@ describe('라우트', () => {
   });
 });
 
+describe('끝난 채팅·훅 (지난 세션 running, 작동 중)', () => {
+  const S01 = 'b5b49096-5604-499f-a80b-49f35d8d09bb';
+  it('채팅 → close 면 running null, 그 뒤 터미널 훅 SessionStart 면 terminal(작동 중에도 잡힘), SessionEnd 면 null. PLENUM_NOTIFY 는 채팅 claude 에만', async () => {
+    const s = setup();
+    // 진짜 기록(01 세션)을 이 프로젝트 cwd 로 옮긴 세션 파일
+    const home = path.join(s.root, '.claude 홈');
+    const src = path.join(APP, 'test', 'fixtures', 'history', 'projects', '-tmp-plenum-rec-----AbCdEg', `${S01}.jsonl`);
+    const ls = fs.readFileSync(src, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).map((l) => (typeof l.cwd === 'string' ? { ...l, cwd: s.project.path } : l));
+    fs.mkdirSync(path.join(home, 'projects', 'x'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'projects', 'x', `${S01}.jsonl`), ls.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const file = path.join(s.root, 'idle.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', S01) }, { dir: 'out', msg: RESULT }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
+    const env = s.fake.env({ script: file });
+    const chats = createChatManager({ cfgDir: s.cfgDir, env, closeWaitMs: 3000 });
+    managers.push(chats);
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats, claudeHome: home });
+    try {
+      const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+      const running = async () => (await srv.call('GET', `/api/projects/${pid}/sessions`)).body.find((x: any) => x.id === S01)?.running;
+      const hook = (event: string, extra: Record<string, unknown> = {}) => srv.call('POST', '/api/hook', { event, session_id: S01, cwd: s.project.path, ...extra });
+      const terminalWorkers = async () => (await srv.call('GET', `/api/projects/${pid}/activity`)).body.sessions.filter((x: any) => x.source === 'terminal').flatMap((x: any) => x.workers.map((w: any) => w.id));
+
+      const chatId = (await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕' })).body.chat.chatId;
+      await waitEvent(chats, chatId, 'state', (e) => e.state === 'idle');
+      expect(await running()).toBe('chat');
+      // 채팅 claude 만 PLENUM_NOTIFY=0 을 받았다. 서버 env·프로세스 env(터미널로 열기가 물려줌)에는 없다
+      expect(s.fake.argsCalls()[0].notify).toBe('0');
+      expect(env.PLENUM_NOTIFY).toBeUndefined();
+      expect(process.env.PLENUM_NOTIFY).toBeUndefined();
+      expect(chatEnv(env).PLENUM_NOTIFY).toBe('0');
+      expect(env.PLENUM_NOTIFY).toBeUndefined();
+
+      expect((await srv.call('POST', `/api/chats/${chatId}/close`)).body.state).toBe('ended');
+      expect(chats.findBySession(S01)).toBeNull();
+      expect(await running()).toBeNull();
+
+      // 같은 세션을 터미널에서 이어 열면 훅이 그대로 온다
+      expect((await hook('SessionStart', { source: 'resume' })).body).toEqual({ ok: true });
+      expect((await hook('SubagentStart', { agent_type: 'Explore', agent_id: 'a1' })).body).toEqual({ ok: true });
+      expect(await running()).toBe('terminal');
+      expect(await terminalWorkers()).toEqual(['a1']);
+      await hook('SessionEnd', { reason: 'prompt_input_exit' });
+      expect(await running()).toBeNull();
+      expect(await terminalWorkers()).toEqual([]);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('라우트: 리셋 시각 모르는 한도면 새 채팅 201·send 200 + 경고(막지 않음)', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'idle.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'out', msg: RESULT }, { dir: 'in', msg: { type: 'user' } }, { dir: 'out', msg: RESULT }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
+    const env = s.fake.env({ script: file });
+    const lim = (resetsAt: number | null) => ({ receivedAt: Date.now(), fiveHour: { pct: 100, resetsAt, status: 'rejected' }, rejected: { window: 'five_hour', resetsAt } });
+    saveLimits(s.cfgDir, lim(null) as any);
+    const chats = createChatManager({ cfgDir: s.cfgDir, env, closeWaitMs: 3000 });
+    managers.push(chats);
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
+    try {
+      const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+      const st = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕' });
+      expect(st.status).toBe(201);
+      expect(st.body.warnings).toEqual([LIMIT_UNKNOWN_RESET]);
+      const chatId = st.body.chat.chatId;
+      await waitEvent(chats, chatId, 'state', (e) => e.state === 'idle');
+      const ok = await srv.call('POST', `/api/chats/${chatId}/send`, { text: '또' });
+      expect(ok.status).toBe(200);
+      expect(ok.body.warnings).toEqual([LIMIT_UNKNOWN_RESET]);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
 describe('--effort 지원 감지', () => {
   it('도움말에 --effort 가 있으면 effort: true, 같은 경로·버전은 캐시', async () => {
     const s = setup();
@@ -453,7 +601,9 @@ describe('--effort 지원 감지', () => {
     managers.push(chats);
     const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
     try {
-      expect((await srv.call('GET', '/api/claude/capabilities')).body).toEqual({ found: true, version: '2.1.248', effort: false });
+      // claude --version 을 띄우는 GET 이라 X-Plenum 필수
+      expect((await srv.call('GET', '/api/claude/capabilities')).status).toBe(403);
+      expect((await srv.call('GET', '/api/claude/capabilities', undefined, { 'X-Plenum': '1' })).body).toEqual({ found: true, version: '2.1.248', effort: false });
       const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
       const bad = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕', effort: 'high' });
       expect(bad.status).toBe(400);

@@ -1,7 +1,7 @@
 // 로컬 HTTP 서버. 127.0.0.1에만 묶는다.
 // 다른 사이트가 브라우저를 통해 이 서버를 부르지 못하게: Host가 127.0.0.1/localhost가 아니면 거부(DNS rebinding),
 // 바꾸는 요청(POST·PUT·DELETE)은 X-Plenum 헤더가 있어야 한다(사용자 정의 헤더는 CORS preflight가 필요한데 응답하지 않는다).
-// GET 이어도 부작용이 있는 것(/api/kit/remote 는 git fetch)은 같은 헤더가 있어야 한다.
+// GET 이어도 부작용이 있는 것(/api/kit/remote 는 git fetch, /api/claude/capabilities 는 claude --version 실행)은 같은 헤더가 있어야 한다.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -112,11 +112,15 @@ export function createHandler(opts: ServerOptions = {}) {
     if (ev.type !== 'init') return;
     try { activity.registerChatProject(chat.chatId, findProject(loadConfig(cfgDir), chat.projectId).path); } catch { /* 지워진 프로젝트 */ }
   });
-  const runningOf = opts.runningOf ?? ((sid: string) => (chats.findBySession(sid) ? 'chat' as const : activity.terminalAlive(sid) ? 'terminal' as const : null));
+  // 끝난 채팅은 실행 중이 아니다(findBySession 이 이미 거르지만 다른 registry 를 넣어도 같게)
+  const runningOf = opts.runningOf ?? ((sid: string) => {
+    const c = chats.findBySession(sid);
+    return c && c.state !== 'ended' ? 'chat' as const : activity.terminalAlive(sid) ? 'terminal' as const : null;
+  });
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, parts: string[]) {
     const method = req.method || 'GET';
-    const needsHeader = method !== 'GET' || (parts[0] === 'kit' && parts[1] === 'remote');
+    const needsHeader = method !== 'GET' || (parts[0] === 'kit' && parts[1] === 'remote') || (parts[0] === 'claude' && parts[1] === 'capabilities');
     if (needsHeader && req.headers['x-plenum'] !== '1') throw new UserError(403, 'X-Plenum 헤더가 없는 요청');
     const cfg = loadConfig(cfgDir);
     const [a, b, c] = parts;

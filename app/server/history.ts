@@ -83,7 +83,7 @@ async function parseFile(file: string): Promise<Parsed | null> {
       else if (j.type === 'ai-title' && typeof j.aiTitle === 'string' && j.aiTitle.trim()) p.aiTitle = j.aiTitle;
       else if (j.type === 'summary' && typeof j.summary === 'string' && j.summary.trim()) p.summary = j.summary;
       const h = humanText(j);
-      if (h !== null) { p.humans++; if (p.firstQuestion === null) p.firstQuestion = h; }
+      if (h !== null) { p.humans++; if (p.firstQuestion === null && !isCommandLine(h)) p.firstQuestion = h; }
       if (assistantText(j) !== null) ids.add(String(j.message?.id ?? j.uuid ?? ''));
       for (const t of toolUses(j)) if (t.name === 'Skill') { const m = modeFromSkill(t.input?.skill); if (m) p.skillMode = m; }
     });
@@ -111,6 +111,12 @@ function sessionFiles(claudeHome: string, only?: string): { sid: string; file: s
   return out;
 }
 
+// 명령 줄: /model·/usage 같은 내장 명령(<command-name> 으로 시작)과 그 출력(<local-command-stdout>·<local-command-stderr>).
+// 첫 질문 후보에서 건너뛴다. <command-message> 로 시작하는 스킬 호출은 진짜 질문이다
+function isCommandLine(s: string): boolean {
+  return /^\s*<(command-name|local-command-stdout|local-command-stderr)>/.test(s);
+}
+
 // 스킬·슬래시 명령으로 시작한 첫 질문(<command-message>…<command-name>/x</command-name><command-args>y</command-args>)은 "/x y" 로 보인다
 export function promptLabel(s: string): string {
   const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(s);
@@ -130,8 +136,7 @@ export async function listSessions(projectPath: string, opts: HistoryOptions): P
   for (const { sid, file } of sessionFiles(opts.claudeHome)) {
     const p = await parseFile(file);
     if (!p || p.cwd === null || !samePath(p.cwd, projectPath, platform)) continue;
-    if (p.firstQuestion === null) continue;
-    if (p.firstQuestion.trimStart().startsWith('<command-name>')) continue; // /usage 만 친 세션 등
+    if (p.firstQuestion === null) continue; // 진짜 사람 메시지가 없음(/usage 만 친 세션 등)
     const ai = p.customTitle ?? p.aiTitle ?? p.summary;
     const m = meta[sid]?.mode;
     out.push({
@@ -229,10 +234,10 @@ export async function readTranscript(projectPath: string, sid: string, opts: His
         if (!u) continue;
         if (u.name === 'AskUserQuestion' && !b.is_error) {
           const labels = answerLabels(j, b);
-          if (labels.length) push({ type: 'answered', kind: 'question', summary: `답함: ${labels.join(', ')}` });
+          if (labels.length) push({ type: 'answered', kind: 'question', summary: labels.join(', '), outcome: 'answered' });
         } else if (userDenied(j, b)) {
           const d = toolDetail(u.input);
-          push({ type: 'answered', kind: 'permission', summary: `거부함: ${u.name}${d ? ' ' + d : ''}` });
+          push({ type: 'answered', kind: 'permission', summary: `${u.name}${d ? ' ' + d : ''}`, outcome: 'denied' });
         }
       }
     }

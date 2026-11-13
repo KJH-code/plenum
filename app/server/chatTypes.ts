@@ -112,7 +112,8 @@ export type TranscriptItem =
   | { type: 'user'; text: string; at: string | null }
   | { type: 'assistant-text'; text: string; at: string | null }
   | { type: 'tools'; names: string[]; count: number }                          // 연속된 도구 호출을 한 줄로
-  | { type: 'answered'; kind: 'question' | 'permission'; summary: string };     // 지난 카드: "답함: ○○"
+  | { type: 'answered'; kind: 'question' | 'permission'; summary: string;      // 지난 카드: 접두어 없이 내용만("a.txt", "Bash rm a.txt")
+      outcome?: 'answered' | 'denied' };                                        // 화면이 "답함: "·"거부함: " 을 고른다
 
 // ── 실행 중 채팅 목록 ─────────────────────────────────
 // GET /api/projects/:id/chats

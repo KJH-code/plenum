@@ -1,19 +1,27 @@
 // 채팅이 띄운 claude 프로세스 관리: 트리째 종료, PID 파일, 지난 실행이 남긴 고아 정리.
-// PID 파일(<cfgDir>/chat-pids.json, [{pid, startedAt}])은 띄울 때 추가하고 끝나면 지운다.
-// 서버가 강제로 꺼져서 지우지 못한 pid 는 다음 시작 때 cleanupOrphans 가 본다.
+// PID 파일(<cfgDir>/chat-pids.json, [{pid, startedAt, ownerPid, procStart}])은 띄울 때 추가하고 끝나면 지운다.
+// ownerPid = 띄운 서버 pid, procStart = 그 claude 프로세스의 OS 시작 시각(ms, 못 읽으면 null).
+// 서버가 강제로 꺼져서 지우지 못한 pid 는 다음 시작 때 cleanupOrphans 가 본다:
+// 소유 서버가 살아 있으면(같은 설정 폴더로 띄운 두 번째 서버) 건드리지 않고, pid 재사용이면(시작 시각이 다름) 안 죽인다.
 // 외부 명령은 셸 없이 execFile·spawn 에 배열로 넘긴다.
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export interface PidEntry { pid: number; startedAt: number }
+export interface PidEntry { pid: number; startedAt: number; ownerPid: number | null; procStart: number | null }
 
 const PID_FILE = 'chat-pids.json';
+const START_SLACK_MS = 2000; // 기록한 시작 시각과 지금 시작 시각이 이만큼 안이면 같은 프로세스
+
+const posInt = (v: unknown): number | null => (Number.isInteger(v) && (v as number) > 0 ? (v as number) : null);
+const finite = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 export function readPids(cfgDir: string): PidEntry[] {
   try {
     const v = JSON.parse(fs.readFileSync(path.join(cfgDir, PID_FILE), 'utf8'));
-    return Array.isArray(v) ? v.filter((e) => e && Number.isInteger(e.pid) && e.pid > 0).map((e) => ({ pid: e.pid, startedAt: Number(e.startedAt) || 0 })) : [];
+    return Array.isArray(v)
+      ? v.filter((e) => e && posInt(e.pid)).map((e) => ({ pid: e.pid, startedAt: Number(e.startedAt) || 0, ownerPid: posInt(e.ownerPid), procStart: finite(e.procStart) }))
+      : [];
   } catch { return []; }
 }
 function writePids(cfgDir: string, list: PidEntry[]) {
@@ -24,8 +32,18 @@ function writePids(cfgDir: string, list: PidEntry[]) {
   fs.writeFileSync(tmp, JSON.stringify(sorted, null, 2) + '\n', 'utf8');
   fs.renameSync(tmp, file);
 }
-export function addPid(cfgDir: string, pid: number) {
-  writePids(cfgDir, [...readPids(cfgDir).filter((e) => e.pid !== pid), { pid, startedAt: Date.now() }]);
+// 항목을 바로 쓰고(procStart null), 시작 시각을 읽으면 채운다. 그사이 지워졌으면(이미 끝남) 다시 넣지 않는다.
+// ownerPid 는 테스트가 다른 서버 흉내로 바꾼다
+export async function addPid(cfgDir: string, pid: number, opts: { ownerPid?: number; platform?: NodeJS.Platform } = {}): Promise<void> {
+  const ownerPid = opts.ownerPid ?? process.pid;
+  writePids(cfgDir, [...readPids(cfgDir).filter((e) => e.pid !== pid), { pid, startedAt: Date.now(), ownerPid, procStart: null }]);
+  const t = await procStartTime(pid, opts.platform);
+  if (t === null) return;
+  const list = readPids(cfgDir);
+  const e = list.find((x) => x.pid === pid && x.ownerPid === ownerPid);
+  if (!e) return;
+  e.procStart = t;
+  writePids(cfgDir, list);
 }
 export function removePid(cfgDir: string, pid: number) {
   const list = readPids(cfgDir);
@@ -57,10 +75,42 @@ export function killTreeNow(pid: number, platform = process.platform) {
   void killTree(pid, platform);
 }
 
-function run(cmd: string, args: string[]): Promise<string> {
+function run(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { windowsHide: true, encoding: 'utf8', timeout: 15000 }, (err, stdout) => resolve(err ? '' : String(stdout)));
+    execFile(cmd, args, { windowsHide: true, encoding: 'utf8', timeout: 15000, ...(env ? { env } : {}) }, (err, stdout) => resolve(err ? '' : String(stdout)));
   });
+}
+
+// Linux 클록 틱(/proc/N/stat 의 시작 시각 단위). getconf 를 한 번만 부른다(없으면 100)
+let clkTck: Promise<number> | null = null;
+function linuxClkTck(): Promise<number> {
+  clkTck ??= run('getconf', ['CLK_TCK']).then((o) => { const n = parseInt(o.trim(), 10); return n > 0 ? n : 100; });
+  return clkTck;
+}
+
+// 그 pid 의 OS 시작 시각(유닉스 ms). 못 읽으면 null(없는 pid 포함).
+// Linux: /proc/stat btime + /proc/N/stat 22번째 칸(부팅 뒤 클록 틱). mac: ps -o lstart=.
+// Windows: PowerShell (Get-Process).StartTime.ToFileTimeUtc() (1601년부터 100ns).
+export async function procStartTime(pid: number, platform = process.platform): Promise<number | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (platform === 'win32') {
+    const out = (await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`])).trim();
+    if (!/^\d+$/.test(out)) return null;
+    return Number(BigInt(out) / 10000n - 11644473600000n);
+  }
+  if (platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' '); // 3번째 칸(state)부터
+      const ticks = Number(rest[22 - 3]);
+      const btime = /^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8'));
+      if (!Number.isFinite(ticks) || !btime) return null;
+      return Number(btime[1]) * 1000 + Math.round((ticks * 1000) / (await linuxClkTck()));
+    } catch { return null; }
+  }
+  const out = (await run('ps', ['-p', String(pid), '-o', 'lstart='], { ...process.env, LC_ALL: 'C', LANG: 'C' })).trim();
+  const t = out ? Date.parse(out) : NaN;
+  return Number.isFinite(t) ? t : null;
 }
 
 // 그 pid 가 claude 인가 (pid 재사용으로 남의 프로세스를 죽이지 않게).
@@ -83,16 +133,27 @@ export async function looksLikeClaude(pid: number, platform = process.platform):
   return /claude/i.test(await run('ps', ['-p', String(pid), '-o', 'comm=']));
 }
 
-// PID 파일의 pid 중 살아 있고 claude 인 것만 트리째 종료하고 파일을 비운다. 정리한 수를 돌려준다
+// PID 파일의 고아를 정리한다. 정리한 수를 돌려준다.
+// - 소유 서버가 살아 있으면 건너뛰고 항목도 남긴다(그 서버의 채팅)
+// - 소유 서버가 없으면: 지금 시작 시각이 기록과 같고(±2초) claude 일 때만 트리째 종료. 시작 시각을 못 읽거나
+//   기록이 없으면 죽이지 않는다(pid 재사용으로 남의 프로세스를 죽이지 않게). 이 항목들은 파일에서 지운다
 export async function cleanupOrphans(cfgDir: string, platform = process.platform): Promise<number> {
   const list = readPids(cfgDir);
+  const keep: PidEntry[] = [];
   let n = 0;
   for (const e of list) {
-    if (e.pid === process.pid || !isAlive(e.pid)) continue;
+    if (e.ownerPid !== null && e.ownerPid !== process.pid && isAlive(e.ownerPid)) { keep.push(e); continue; }
+    if (e.pid === process.pid || !isAlive(e.pid) || e.procStart === null) continue;
+    const now = await procStartTime(e.pid, platform);
+    if (now === null || Math.abs(now - e.procStart) > START_SLACK_MS) continue;
     if (!(await looksLikeClaude(e.pid, platform))) continue;
     await killTree(e.pid, platform);
     n++;
   }
-  if (list.length) writePids(cfgDir, []);
+  // 정리하는 동안 다른 서버가 더한 항목은 남긴다
+  if (list.length) {
+    const seen = new Set(list.map((e) => `${e.pid}:${e.ownerPid}`));
+    writePids(cfgDir, [...keep, ...readPids(cfgDir).filter((e) => !seen.has(`${e.pid}:${e.ownerPid}`))]);
+  }
   return n;
 }
