@@ -23,7 +23,7 @@ describe('terminalCommand', () => {
     expect(t.via).toBe('wt');
     expect(t.command).toEqual({ cmd: WT, args: ['-d', WIN_CWD, 'powershell', '-NoExit', '-Command', `claude --resume ${SID}`] });
     expect(t.command!.verbatim).toBeUndefined();
-    expect(t.display).toEqual([`cd "${WIN_CWD}"`, `claude --resume ${SID}`]);
+    expect(t.display).toEqual([`cd -LiteralPath '${WIN_CWD}'`, `claude --resume ${SID}`]);
   });
 
   test('win32 + wt 없음: cmd.exe verbatim 한 줄', () => {
@@ -96,7 +96,7 @@ describe('POST /api/projects/:id/sessions/:sid/terminal', () => {
     expect(launched[0].cmd).toBe(WT);
     expect(sent).toHaveLength(1);
     expect(sent[0].status).toBe(200);
-    expect(sent[0].body).toMatchObject({ closedChat: true, launched: true, via: 'wt', display: [`cd "${WIN_CWD}"`, `claude --resume ${SID}`] });
+    expect(sent[0].body).toMatchObject({ closedChat: true, launched: true, via: 'wt', display: [`cd -LiteralPath '${WIN_CWD}'`, `claude --resume ${SID}`] });
     expect(sent[0].body.message).toMatch(/trust/);
   });
 
@@ -116,7 +116,7 @@ describe('POST /api/projects/:id/sessions/:sid/terminal', () => {
     await handleActivity(ctx, { activity: createActivity({ cfgDir: tmpDir() }), launcher, platform: 'win32', isFile: hasWt });
     expect(sent[0].status).toBe(500);
     expect(sent[0].body.error).toContain('ENOENT');
-    expect(sent[0].body).toMatchObject({ launched: false, display: [`cd "${WIN_CWD}"`, `claude --resume ${SID}`] });
+    expect(sent[0].body).toMatchObject({ launched: false, display: [`cd -LiteralPath '${WIN_CWD}'`, `claude --resume ${SID}`] });
   });
 
   test('linux: launcher 를 부르지 않고 manual + 두 줄', async () => {
@@ -135,4 +135,9 @@ describe('POST /api/projects/:id/sessions/:sid/terminal', () => {
     await expect(handleActivity(ctx, { activity: createActivity({ cfgDir: tmpDir() }), launcher, platform: 'win32', isFile: hasWt })).rejects.toMatchObject({ status: 400 });
     expect(called).toBe(false);
   });
+});
+
+test('PowerShell 표시 줄: $ 와 작은따옴표가 든 경로', () => {
+  const t = terminalCommand({ cwd: "C:\\Users\\홍길동\\a$b 'c'", sessionId: SID, platform: 'win32', env: {}, isFile: () => false });
+  expect(t.display[0]).toBe("cd -LiteralPath 'C:\\Users\\홍길동\\a$b ''c'''");
 });

@@ -25,7 +25,8 @@ export function terminalCommand({ cwd, sessionId, platform = process.platform, e
   const resume = `claude --resume ${sessionId}`;
 
   if (platform === 'win32') {
-    const display = [`cd "${cwd}"`, resume];
+    // PowerShell: 작은따옴표 안은 $·백틱을 펼치지 않는다. 작은따옴표 자체는 두 번
+    const display = [`cd -LiteralPath '${cwd.replace(/'/g, "''")}'`, resume];
     // wt 는 ; 를 명령 구분자로 읽는다 → ; 가 든 폴더는 cmd 로
     const wt = cwd.includes(';') ? null : resolveCommand('wt', env, 'win32', isFile);
     if (wt) return { display, via: 'wt', command: { cmd: wt, args: ['-d', cwd, 'powershell', '-NoExit', '-Command', resume] } };
