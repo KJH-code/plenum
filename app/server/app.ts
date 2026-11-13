@@ -17,11 +17,18 @@ import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
 import { absolutePath, checkCloneDir, checkKitRepo } from './paths.ts';
+import { createActivity } from './activity.ts';
+import { handleActivity } from './activityRoutes.ts';
+import type { ChatRegistry } from './chatTypes.ts';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
 
-export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher }
+export interface ServerOptions {
+  cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher;
+  chats?: ChatRegistry;                                // 채팅 모듈(없으면 채팅 쪽 현황·훅 중복 방지 없음)
+  workerModel?: (agentType: string) => string | null;  // 훅 agent_type → 모델. 없으면 kit 레포 워커 정의에서 읽는다
+}
 
 // 3단계 라우트 모듈이 받는 것. 각 모듈은 `async function handleXxx(ctx: RouteCtx): Promise<boolean>`(처리했으면 true)
 export interface RouteCtx {
@@ -74,10 +81,19 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   fs.createReadStream(file).pipe(res);
 }
 
+// "jh-kit:w-implement" 또는 "w-implement" → kit 워커 정의의 model. 못 읽으면 null
+function kitWorkerModel(repo: string | null, agentType: string): string | null {
+  const k = readKit(repo);
+  if (!k.ok) return null;
+  const name = agentType.replace(/^[^:]+:/, '');
+  return k.workers.find((w) => w.name === name)?.model ?? null;
+}
+
 export function createHandler(opts: ServerOptions = {}) {
   const cfgDir = opts.cfgDir ?? configDir(opts.env);
   const env = opts.env ?? process.env;
   const launcher = opts.launcher ?? launch;
+  const activity = createActivity({ cfgDir, chats: opts.chats, workerModel: opts.workerModel ?? ((t) => kitWorkerModel(loadConfig(cfgDir).kitRepoPath, t)) });
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, parts: string[]) {
     const method = req.method || 'GET';
@@ -192,7 +208,7 @@ export function createHandler(opts: ServerOptions = {}) {
     }
     // ── 3단계 라우트 (단위마다 한 줄: if (await handleXxx(ctx)) return;) ──
     const ctx: RouteCtx = { req, res, method, parts, cfg, cfgDir, env, body: () => readBody(req), send: (status, body) => send(res, status, body) };
-    void ctx;
+    if (await handleActivity(ctx, { activity, chats: opts.chats, launcher })) return;
     // ── 3단계 라우트 끝 ──
     throw new UserError(404, `없는 API: ${method} /api/${parts.join('/')}`);
   }

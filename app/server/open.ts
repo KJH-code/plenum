@@ -150,5 +150,5 @@ export function launchAndWait(c: Command, waitMs = 15000): Promise<LaunchResult>
 }
 
 // 예전 이름 (테스트·서버가 주입하는 실행기 타입)
-export type Launcher = (c: Command, kind: 'folder' | 'editor') => Promise<LaunchResult>;
+export type Launcher = (c: Command, kind: 'folder' | 'editor' | 'terminal') => Promise<LaunchResult>;
 export const launch: Launcher = (c, kind) => (kind === 'editor' ? launchAndWait(c) : launchDetached(c));

@@ -12,7 +12,7 @@ export interface SaveKit {
   fake: FakeClaude;
   claudeHome: string;
   opened: Command[];                                   // 외부 에디터로 연 명령 (가짜 launcher 가 모은다)
-  launcher: (c: Command, kind: 'folder' | 'editor') => Promise<LaunchResult>;
+  launcher: (c: Command, kind: 'folder' | 'editor' | 'terminal') => Promise<LaunchResult>;
   useFakeClaude(): void;                               // PATH 앞에 가짜 claude, CLAUDE_CONFIG_DIR 은 임시
   setInstallVersion(v: string): void;                  // 가짜 plugin update 가 설치할 버전
   installAsSource(): void;                             // 설치본 = 지금 build/claude-code (같음 상태)
