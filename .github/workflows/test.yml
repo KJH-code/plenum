@@ -58,6 +58,9 @@ jobs:
 
       - name: 앱 타입 검사·테스트
         working-directory: app
+        env:
+          # fixture 비공개 낱말 검사(test/fixtures-privacy.test.ts). 포크 PR 등 비밀이 없으면 빈 값 → 낱말 검사만 건너뛴다
+          PLENUM_PRIVATE_WORDS: ${{ secrets.PLENUM_PRIVATE_WORDS }}
         run: |
           npm ci --no-audit --no-fund
           npm run typecheck

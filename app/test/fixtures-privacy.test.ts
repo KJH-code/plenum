@@ -49,8 +49,9 @@ test('fixture 에 실제 홈 경로(C:\\Users\\ 등)가 없다', () => {
   expect(bad).toEqual([]);
 });
 
-test('PLENUM_PRIVATE_WORDS 에 적은 낱말(실명 등)이 없다', () => {
-  const words = (process.env.PLENUM_PRIVATE_WORDS || '').split(',').map((w) => w.trim()).filter(Boolean);
+// 비밀이 비어 있으면(포크 PR, 비밀 없는 로컬) 이 검사만 건너뛴다 — 이메일·경로 검사는 위에서 그대로 돈다
+const words = (process.env.PLENUM_PRIVATE_WORDS || '').split(',').map((w) => w.trim()).filter(Boolean);
+test.skipIf(words.length === 0)('PLENUM_PRIVATE_WORDS 에 적은 낱말(실명 등)이 없다', () => {
   const bad: string[] = [];
   for (const f of all) { const t = fs.readFileSync(f, 'utf8'); for (const w of words) if (t.includes(w)) bad.push(`${rel(f)}: 비공개 낱말 #${words.indexOf(w) + 1}`); }
   expect(bad).toEqual([]);
