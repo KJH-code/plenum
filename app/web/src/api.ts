@@ -1,3 +1,6 @@
+import type { CardReply, ChatInfo, Limits, ProjectActivity, SessionSummary, TranscriptItem } from '../../server/chatTypes';
+export type * from '../../server/chatTypes';
+
 // 서버 API. 모든 요청에 X-Plenum 헤더를 붙인다 (바꾸는 요청과 부작용 있는 GET /api/kit/remote 는 서버가 없으면 거부).
 export interface Detection {
   exists: boolean;
@@ -65,14 +68,31 @@ export interface InstallState {
   installedVersion: string | null;
 }
 
-async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    headers: method === 'GET' ? { 'X-Plenum': '1' } : { 'Content-Type': 'application/json', 'X-Plenum': '1' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+// 서버가 꺼져 있을 때(fetch 자체가 던짐: "Failed to fetch"·"NetworkError…"·"Load failed") 화면 곳곳이 같은 문구를 보이게
+export const SERVER_DOWN = 'Plenum 서버가 꺼져 있음 — 터미널에서 다시 켜기';
+export class ServerDownError extends Error {
+  constructor() { super(SERVER_DOWN); this.name = 'ServerDownError'; }
+}
+// 서버가 답한 4xx·5xx. 본문(data)도 들고 있다(터미널로 열기 실패 응답의 display 등)
+export class ApiError extends Error {
+  status: number;
+  data: any;
+  constructor(message: string, status: number, data: any) { super(message); this.name = 'ApiError'; this.status = status; this.data = data; }
+}
+
+export async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: method === 'GET' ? { 'X-Plenum': '1' } : { 'Content-Type': 'application/json', 'X-Plenum': '1' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new ServerDownError();
+  }
   const data = await res.json().catch(() => ({ error: `응답을 읽지 못했다 (${res.status})` }));
-  if (!res.ok) throw new Error(data.error || `요청 실패 (${res.status})`);
+  if (!res.ok) throw new ApiError(data.error || `요청 실패 (${res.status})`, res.status, data);
   return data as T;
 }
 
@@ -100,7 +120,25 @@ export const api = {
   openKitFile: (file: string, line?: number) => call<{ ok: true }>('POST', '/api/kit/open', line ? { file, line } : { file }),
   startInstall: () => call<InstallState>('POST', '/api/install'),
   install: () => call<InstallState>('GET', '/api/install'),
+  // 3단계: 채팅·지난 세션·작동 중·한도
+  caps: () => call<ClaudeCaps>('GET', '/api/claude/capabilities'),
+  limits: () => call<{ limits: Limits | null }>('GET', '/api/limits'),
+  sessions: (id: string) => call<SessionSummary[]>('GET', `${P(id)}/sessions`),
+  transcript: (id: string, sid: string) => call<TranscriptItem[]>('GET', `${P(id)}/sessions/${encodeURIComponent(sid)}/transcript`),
+  chats: (id: string) => call<ChatInfo[]>('GET', `${P(id)}/chats`),
+  activity: (id: string) => call<ProjectActivity>('GET', `${P(id)}/activity`),
+  startChat: (id: string, body: { text: string; model?: string; effort?: string; resume?: string }) => call<{ chat: ChatInfo; warnings: string[] }>('POST', `${P(id)}/chats`, body),
+  send: (chatId: string, text: string) => call<{ ok: true; chat: ChatInfo; warnings: string[] }>('POST', `${C(chatId)}/send`, { text }),
+  respond: (chatId: string, reply: CardReply) => call<ChatInfo>('POST', `${C(chatId)}/respond`, reply),
+  interrupt: (chatId: string) => call<ChatInfo>('POST', `${C(chatId)}/interrupt`),
+  terminal: (id: string, sid: string) => call<TerminalResult>('POST', `${P(id)}/sessions/${encodeURIComponent(sid)}/terminal`),
+  forgetTerminal: (id: string, sid: string) => call<{ ok: true; forgotten: boolean }>('POST', `${P(id)}/sessions/${encodeURIComponent(sid)}/forget-terminal`),
 };
+const P = (id: string) => `/api/projects/${encodeURIComponent(id)}`;
+const C = (chatId: string) => `/api/chats/${encodeURIComponent(chatId)}`;
+// server/claudecaps.ts ClaudeCaps, server/activityRoutes.ts 터미널로 열기 응답
+export interface ClaudeCaps { found: boolean; version: string | null; effort: boolean }
+export interface TerminalResult { closedChat: boolean; launched: boolean; via: 'wt' | 'cmd' | 'manual'; display: string[]; message?: string }
 
 // 서버 작업(저장·반영)을 짧은 간격으로 다시 읽는다. running 이 false 가 되면 멈춘다. 돌려주는 함수로도 멈춘다
 export const POLL_MS = 400;

@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "screens": "vite build && tsx e2e/screens.ts",
-    "e2e": "vite build && tsx e2e/flows.ts"
+    "e2e": "vite build && tsx e2e/flows.ts && tsx e2e/chat.ts"
   },
   "dependencies": {
     "react": "18.3.1",
