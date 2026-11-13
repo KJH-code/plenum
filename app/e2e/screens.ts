@@ -10,6 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { createHandler, listen } from '../server/app.ts';
 import { prepareSaveKit } from './savekit.ts';
+import { makeFakeStreamClaude } from '../test/fakeclaudeStream.ts';
+import { copyHistory, limitScript, REC, unknownScript } from './chatfix.ts';
 
 const sk = prepareSaveKit();
 const argKit = path.resolve(process.argv[2] || path.join(process.cwd(), '..', '..', 'jh-kit'));
@@ -26,7 +28,8 @@ fs.mkdirSync(empty);
 execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: empty });
 
 const cfgDir = path.join(root, 'cfg');
-const { server, port } = await listen(createHandler({ cfgDir, launcher: sk.launcher }), 0);
+const handler = createHandler({ cfgDir, launcher: sk.launcher });
+const { server, port } = await listen(handler, 0);
 const base = `http://127.0.0.1:${port}`;
 const H = { 'Content-Type': 'application/json', 'X-Plenum': '1' };
 const post = (url: string, body: unknown, method = 'POST') => fetch(base + url, { method, headers: H, body: JSON.stringify(body) }).then((r) => r.json());
@@ -61,7 +64,7 @@ await page.getByTestId('remote-line').filter({ hasNotText: '확인 중' }).waitF
 await shot('3-settings-workers.png', true);
 
 await page.goto(`${base}/#/project/${encodeURIComponent(kitP.id)}`);
-await page.getByText('[오케스트레이터 채팅]').waitFor();
+await page.getByRole('button', { name: '새 세션' }).waitFor();
 await shot('4-project.png');
 
 await page.goto(`${base}/#/`);
@@ -164,6 +167,69 @@ await page.reload();
 await page.getByTestId('install-panel').waitFor(T);
 await shot('12-kit-version-differs.png', true);
 
+// ── 채팅 장면 (13~17): 가짜 claude stream 모드로 녹화 재생. 지난 세션은 진짜 기록 fixture 를 이 프로젝트로 복사 ──
+const stream = makeFakeStreamClaude(path.join(root, '가짜 stream'));
+process.env.PATH = `${stream.binDir}${path.delimiter}${process.env.PATH}`; // 설치용 가짜 claude 보다 앞에
+for (const sid of ['279fe3c2-3715-4f89-ac82-284e5c2f6842', '9b9b276d-f1e7-4c81-82c9-d87128a70e31', '4b6b568b-6d83-4d93-ba05-7c608b2d16f6']) {
+  copyHistory(process.env.CLAUDE_CONFIG_DIR!, notGit, '-tmp-plenum-rec-----AbCdEf', sid);
+}
+const useScript = (f: string) => { process.env.FAKE_STREAM_SCRIPT = f; };
+const sendChat = async (t: string) => {
+  await page.getByLabel('메시지', { exact: true }).fill(t);
+  await page.locator('.composer').getByRole('button', { name: '보내기' }).click();
+};
+const newSession = () => page.getByRole('button', { name: '새 세션' }).click();
+const perm = (cmd: string) => page.getByTestId('permission-card').filter({ hasText: cmd });
+await page.goto(`${base}/#/project/${encodeURIComponent(ngP.id)}`);
+await page.getByRole('button', { name: '새 세션' }).waitFor(T);
+
+useScript(REC('01-cards.jsonl'));
+await newSession();
+await sendChat('a.txt 와 c.txt 를 만들고 a.txt 를 지워줘');
+await page.getByTestId('question-card').getByRole('button', { name: /^a\.txt/ }).waitFor(T);
+await shot('13-chat-question.png');
+
+await page.getByTestId('question-card').getByRole('button', { name: /^a\.txt/ }).click();
+await perm('touch a.txt').getByRole('button', { name: '허용', exact: true }).click(T);
+await perm('touch c.txt').getByRole('button', { name: /이 세션 동안/ }).waitFor(T);
+await perm('touch c.txt').getByRole('button', { name: '거부…' }).click();
+await page.getByLabel('거부 이유').fill('테스트는 내가 돌릴게');
+await page.getByLabel('거부 이유').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+await shot('14-chat-permission-deny.png');
+await perm('touch c.txt').getByRole('button', { name: /이 세션 동안/ }).click();
+await perm('rm a.txt').getByRole('button', { name: '거부…' }).click(T);
+await page.getByLabel('거부 이유').fill('삭제는 내가 직접 할게');
+await perm('rm a.txt').getByRole('button', { name: '거부 보내기' }).click();
+await page.getByTestId('assistant-text').filter({ hasText: 'Not done' }).waitFor(T);
+
+useScript(REC('04-agents.jsonl'));
+await newSession();
+await sendChat('워커 두 개를 띄워서 파일 수를 세고 인사해줘');
+await page.waitForFunction(() => {
+  const rows = [...document.querySelectorAll('[data-testid=worker-run]')];
+  return rows.length === 2 && rows.every((e) => e.getAttribute('data-state') === 'done');
+}, null, T);
+await page.getByTestId('assistant-text').filter({ hasText: 'ALL DONE' }).waitFor(T);
+await shot('15-chat-done-workers.png');
+
+const unk = path.join(root, 'unknown.jsonl');
+unknownScript(unk);
+useScript(unk);
+await newSession();
+await sendChat('새 형식 요청');
+await page.getByTestId('unknown-card').waitFor(T);
+await shot('16-chat-unknown.png');
+
+// 한도 장면은 마지막에 (limits.json 에 남아 이후 보내기를 막는다)
+const lim = path.join(root, 'limit.jsonl');
+limitScript(lim, Math.floor(Date.now() / 1000) + 3600);
+useScript(lim);
+await newSession();
+await sendChat('한도 확인');
+await page.getByTestId('limit-rejected').waitFor(T);
+await shot('17-chat-limit.png');
+
+await (handler as any).chats.shutdownAll().catch(() => {});
 await browser.close();
 server.close();
 console.log(`ids: kit=${kitP.id} notGit=${ngP.id}`);
