@@ -1,14 +1,15 @@
 // 채팅이 띄운 claude 프로세스 관리: 트리째 종료, PID 파일, 지난 실행이 남긴 고아 정리.
-// PID 파일(<cfgDir>/chat-pids.json, [{pid, startedAt, ownerPid, procStart}])은 띄울 때 추가하고 끝나면 지운다.
-// ownerPid = 띄운 서버 pid, procStart = 그 claude 프로세스의 OS 시작 시각(ms, 못 읽으면 null).
+// PID 파일(<cfgDir>/chat-pids.json, [{pid, startedAt, ownerPid, ownerStart, procStart}])은 띄울 때 추가하고 끝나면 지운다.
+// ownerPid = 띄운 서버 pid, ownerStart = 그 서버의 OS 시작 시각, procStart = 그 claude 프로세스의 OS 시작 시각(ms, 못 읽으면 null).
 // 서버가 강제로 꺼져서 지우지 못한 pid 는 다음 시작 때 cleanupOrphans 가 본다:
 // 소유 서버가 살아 있으면(같은 설정 폴더로 띄운 두 번째 서버) 건드리지 않고, pid 재사용이면(시작 시각이 다름) 안 죽인다.
+// 소유 서버도 pid 만으로 보지 않는다 — 그 pid 를 다른 프로세스가 물려받았으면(시작 시각이 다름) 소유 서버는 없다.
 // 외부 명령은 셸 없이 execFile·spawn 에 배열로 넘긴다.
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export interface PidEntry { pid: number; startedAt: number; ownerPid: number | null; procStart: number | null }
+export interface PidEntry { pid: number; startedAt: number; ownerPid: number | null; ownerStart: number | null; procStart: number | null }
 
 const PID_FILE = 'chat-pids.json';
 const START_SLACK_MS = 2000; // 기록한 시작 시각과 지금 시작 시각이 이만큼 안이면 같은 프로세스
@@ -20,7 +21,7 @@ export function readPids(cfgDir: string): PidEntry[] {
   try {
     const v = JSON.parse(fs.readFileSync(path.join(cfgDir, PID_FILE), 'utf8'));
     return Array.isArray(v)
-      ? v.filter((e) => e && posInt(e.pid)).map((e) => ({ pid: e.pid, startedAt: Number(e.startedAt) || 0, ownerPid: posInt(e.ownerPid), procStart: finite(e.procStart) }))
+      ? v.filter((e) => e && posInt(e.pid)).map((e) => ({ pid: e.pid, startedAt: Number(e.startedAt) || 0, ownerPid: posInt(e.ownerPid), ownerStart: finite(e.ownerStart), procStart: finite(e.procStart) }))
       : [];
   } catch { return []; }
 }
@@ -32,17 +33,26 @@ function writePids(cfgDir: string, list: PidEntry[]) {
   fs.writeFileSync(tmp, JSON.stringify(sorted, null, 2) + '\n', 'utf8');
   fs.renameSync(tmp, file);
 }
-// 항목을 바로 쓰고(procStart null), 시작 시각을 읽으면 채운다. 그사이 지워졌으면(이미 끝남) 다시 넣지 않는다.
-// ownerPid 는 테스트가 다른 서버 흉내로 바꾼다
-export async function addPid(cfgDir: string, pid: number, opts: { ownerPid?: number; platform?: NodeJS.Platform } = {}): Promise<void> {
+// 이 서버의 시작 시각. 처음 부를 때 한 번 읽어 둔다(채팅 매니저를 만들 때 미리 부른다)
+let ownStart: Promise<number | null> | null = null;
+export function ownerStartTime(): Promise<number | null> {
+  ownStart ??= procStartTime(process.pid);
+  return ownStart;
+}
+
+// 항목을 바로 쓰고(procStart·ownerStart null), 시작 시각을 읽으면 채운다. 그사이 지워졌으면(이미 끝남) 다시 넣지 않는다.
+// ownerPid·ownerStart 는 테스트가 다른 서버 흉내로 바꾼다. ownerPid 만 주면 ownerStart 는 null(대조 못 함)
+export async function addPid(cfgDir: string, pid: number, opts: { ownerPid?: number; ownerStart?: number | null; platform?: NodeJS.Platform } = {}): Promise<void> {
   const ownerPid = opts.ownerPid ?? process.pid;
-  writePids(cfgDir, [...readPids(cfgDir).filter((e) => e.pid !== pid), { pid, startedAt: Date.now(), ownerPid, procStart: null }]);
+  writePids(cfgDir, [...readPids(cfgDir).filter((e) => e.pid !== pid), { pid, startedAt: Date.now(), ownerPid, ownerStart: opts.ownerStart ?? null, procStart: null }]);
   const t = await procStartTime(pid, opts.platform);
-  if (t === null) return;
+  const os0 = opts.ownerStart !== undefined ? opts.ownerStart : ownerPid === process.pid ? await ownerStartTime() : null;
+  if (t === null && os0 === null) return;
   const list = readPids(cfgDir);
   const e = list.find((x) => x.pid === pid && x.ownerPid === ownerPid);
   if (!e) return;
-  e.procStart = t;
+  if (t !== null) e.procStart = t;
+  if (os0 !== null) e.ownerStart = os0;
   writePids(cfgDir, list);
 }
 export function removePid(cfgDir: string, pid: number) {
@@ -133,31 +143,41 @@ export async function looksLikeClaude(pid: number, platform = process.platform):
   return /claude/i.test(await run('ps', ['-p', String(pid), '-o', 'comm=']));
 }
 
+// 소유 서버가 살아 있나: pid 가 살아 있고 지금 그 pid 의 시작 시각이 ownerStart 와 같다(±2초).
+// 기록이 없거나 지금 시각을 못 읽으면 살아 있다고 본다(남의 채팅을 죽이지 않게)
+async function ownerAlive(e: PidEntry, platform: NodeJS.Platform, startTime: (pid: number, platform: NodeJS.Platform) => Promise<number | null>): Promise<boolean> {
+  if (e.ownerPid === null || e.ownerPid === process.pid || !isAlive(e.ownerPid)) return false;
+  if (e.ownerStart === null) return true;
+  const now = await startTime(e.ownerPid, platform);
+  return now === null || Math.abs(now - e.ownerStart) <= START_SLACK_MS;
+}
+
 // PID 파일의 고아를 정리한다. 정리한 수를 돌려준다.
 // - 소유 서버가 살아 있으면 건너뛰고 항목도 남긴다(그 서버의 채팅)
-// - 소유 서버가 없으면: 지금 시작 시각이 기록과 같고(±2초) claude 일 때만 트리째 종료. 시작 시각을 못 읽거나
-//   기록이 없으면 죽이지 않는다(pid 재사용으로 남의 프로세스를 죽이지 않게). 이 항목들은 파일에서 지운다
+// - 소유 서버가 없으면: 지금 시작 시각이 기록과 같고(±2초) claude 일 때만 트리째 종료하고 항목을 지운다
+// - 지금 시작 시각을 못 읽으면 죽이지 않고 항목도 남긴다(다음 정리 때 다시 본다)
+// - 프로세스가 없거나, 기록이 없거나, 시작 시각이 다르거나(pid 재사용), claude 가 아니면 죽이지 않고 항목만 지운다
+// 마지막에 파일을 다시 읽어 이번에 지우기로 한 항목만 뺀다 — 그사이 다른 서버가 바꾼 것(지움·더함·procStart 채움)은 그대로
 // startTime 은 테스트가 바꾼다(Windows PowerShell 이 시작 시각을 못 읽는 경우 흉내)
 export async function cleanupOrphans(
   cfgDir: string, platform = process.platform,
   startTime: (pid: number, platform: NodeJS.Platform) => Promise<number | null> = procStartTime,
 ): Promise<number> {
   const list = readPids(cfgDir);
-  const keep: PidEntry[] = [];
+  const key = (e: PidEntry) => `${e.pid}:${e.ownerPid}`;
+  const drop = new Set<string>();
   let n = 0;
   for (const e of list) {
-    if (e.ownerPid !== null && e.ownerPid !== process.pid && isAlive(e.ownerPid)) { keep.push(e); continue; }
-    if (e.pid === process.pid || !isAlive(e.pid) || e.procStart === null) continue;
+    if (await ownerAlive(e, platform, startTime)) continue;
+    if (e.pid === process.pid || !isAlive(e.pid) || e.procStart === null) { drop.add(key(e)); continue; }
     const now = await startTime(e.pid, platform);
-    if (now === null || Math.abs(now - e.procStart) > START_SLACK_MS) continue;
+    if (now === null) continue;
+    drop.add(key(e));
+    if (Math.abs(now - e.procStart) > START_SLACK_MS) continue;
     if (!(await looksLikeClaude(e.pid, platform))) continue;
     await killTree(e.pid, platform);
     n++;
   }
-  // 정리하는 동안 다른 서버가 더한 항목은 남긴다
-  if (list.length) {
-    const seen = new Set(list.map((e) => `${e.pid}:${e.ownerPid}`));
-    writePids(cfgDir, [...keep, ...readPids(cfgDir).filter((e) => !seen.has(`${e.pid}:${e.ownerPid}`))]);
-  }
+  if (drop.size) writePids(cfgDir, readPids(cfgDir).filter((e) => !drop.has(key(e))));
   return n;
 }

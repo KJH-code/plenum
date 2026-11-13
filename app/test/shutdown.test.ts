@@ -145,7 +145,7 @@ it('cleanupOrphans: 시작 시각이 기록과 다르면(pid 재사용) 또는 �
 });
 
 // Windows 에서 PowerShell 이 시작 시각을 못 읽는 경우(null) 흉내: 읽기 함수만 바꾸고 나머지 조건(소유 서버 없음, claude)은 같다
-it('cleanupOrphans: 시작 시각을 못 읽으면(null) 소유 서버가 없고 claude 여도 안 죽인다, 같은 값을 읽으면 죽인다(대조군)', async () => {
+it('cleanupOrphans: 시작 시각을 못 읽으면(null) 소유 서버가 없고 claude 여도 안 죽이고 항목도 남긴다, 같은 값을 읽으면 죽인다(대조군)', async () => {
   const dir = root();
   const cfgDir = path.join(dir, '설정');
   const { child: orphan, grand } = await orphanClaude(dir);
@@ -160,7 +160,8 @@ it('cleanupOrphans: 시작 시각을 못 읽으면(null) 소유 서버가 없고
     await sleep(300);
     expect(isAlive(orphan.pid!)).toBe(true);
     expect(isAlive(grand)).toBe(true);
-    expect(readPids(cfgDir)).toEqual([]); // 지금 코드: 소유 서버가 없는 항목은 안 죽여도 지운다
+    // 항목은 남긴다(다음 정리 때 다시 본다). 프로세스가 없어지면 그때 지운다
+    expect(readPids(cfgDir).map((e) => e.pid)).toEqual([orphan.pid]);
 
     // 대조군: 같은 항목, 읽기 함수만 기록과 같은 값
     await addPid(cfgDir, orphan.pid!, { ownerPid: dead });
@@ -170,4 +171,97 @@ it('cleanupOrphans: 시작 시각을 못 읽으면(null) 소유 서버가 없고
     expect(await gone(grand)).toBe(true);
     expect(readPids(cfgDir)).toEqual([]);
   } finally { kill(orphan); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
+});
+
+it('cleanupOrphans: 시작 시각을 못 읽어 남긴 항목도 프로세스가 없으면 지운다', async () => {
+  const dir = root();
+  const cfgDir = path.join(dir, '설정');
+  const dead = await deadPid();
+  const gonePid = await deadPid();
+  await addPid(cfgDir, gonePid, { ownerPid: dead });
+  rewrite(cfgDir, (e) => ({ ...e, procStart: Date.now() }));
+  const asked: number[] = [];
+  expect(await cleanupOrphans(cfgDir, process.platform, async (pid) => { asked.push(pid); return null; })).toBe(0);
+  expect(asked).toEqual([]);
+  expect(readPids(cfgDir)).toEqual([]);
+});
+
+// 소유 서버 pid 를 관계없는 살아 있는 프로세스가 물려받은 흉내: 소유 pid 는 살아 있고 시작 시각만 다르다
+it('cleanupOrphans: 소유 pid 가 살아 있어도 시작 시각이 ownerStart 와 다르면(pid 재사용) 고아로 정리, 같으면 안 건드림', async () => {
+  const dir = root();
+  const cfgDir = path.join(dir, '설정');
+  const { child: orphan, grand } = await orphanClaude(dir);
+  const owner = sleeper();
+  try {
+    const ownerStart = await procStartTime(owner.pid!);
+    expect(ownerStart).not.toBeNull();
+    // 진짜 소유(같은 시각) → 안 건드리고 항목도 그대로
+    await addPid(cfgDir, orphan.pid!, { ownerPid: owner.pid!, ownerStart });
+    const before = readPids(cfgDir);
+    expect(before[0].ownerStart).toBe(ownerStart);
+    expect(await cleanupOrphans(cfgDir)).toBe(0);
+    await sleep(300);
+    expect(isAlive(orphan.pid!)).toBe(true);
+    expect(readPids(cfgDir)).toEqual(before);
+    // 소유 서버의 시작 시각을 못 읽으면 살아 있다고 본다
+    expect(await cleanupOrphans(cfgDir, process.platform, async (pid) => (pid === owner.pid ? null : procStartTime(pid)))).toBe(0);
+    expect(isAlive(orphan.pid!)).toBe(true);
+    expect(readPids(cfgDir)).toEqual(before);
+    // 같은 pid 지만 다른 프로세스(시작 시각 1분 다름) → 소유 서버 없음 → 고아 정리
+    rewrite(cfgDir, (e) => ({ ...e, ownerStart: ownerStart! - 60000 }));
+    expect(await cleanupOrphans(cfgDir)).toBe(1);
+    expect(await gone(orphan.pid!)).toBe(true);
+    expect(await gone(grand)).toBe(true);
+    expect(isAlive(owner.pid!)).toBe(true);
+    expect(readPids(cfgDir)).toEqual([]);
+  } finally { kill(owner); kill(orphan); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
+});
+
+it('addPid: 기본 소유자는 이 서버, ownerStart 는 이 서버의 시작 시각', async () => {
+  const dir = root();
+  const cfgDir = path.join(dir, '설정');
+  const p = sleeper();
+  try {
+    await addPid(cfgDir, p.pid!);
+    const [e] = readPids(cfgDir);
+    expect(e.ownerPid).toBe(process.pid);
+    expect(e.ownerStart).toBe(await procStartTime(process.pid));
+  } finally { kill(p); }
+});
+
+// 정리하는 동안 다른 서버가 파일을 바꾼 흉내: 시작 시각 읽기 안에서 파일을 고친다
+it('cleanupOrphans: 마지막 쓰기는 파일을 다시 읽어 이번에 지운 항목만 뺀다(그사이 다른 서버의 지움·더함·procStart 채움 유지)', async () => {
+  const dir = root();
+  const cfgDir = path.join(dir, '설정');
+  const { child: orphan, grand } = await orphanClaude(dir);
+  const owner = sleeper(); // 다른 서버(살아 있음)
+  const other1 = sleeper();
+  const other2 = sleeper();
+  const dead = await deadPid();
+  try {
+    await addPid(cfgDir, orphan.pid!, { ownerPid: dead });
+    await addPid(cfgDir, other1.pid!, { ownerPid: owner.pid! });
+    await addPid(cfgDir, other2.pid!, { ownerPid: owner.pid! });
+    rewrite(cfgDir, (e) => (e.pid === other2.pid ? { ...e, procStart: null } : e));
+    const recorded = readPids(cfgDir).find((e) => e.pid === orphan.pid)!.procStart;
+    const file = path.join(cfgDir, 'chat-pids.json');
+    const added = { pid: 4242424, startedAt: 1, ownerPid: owner.pid!, ownerStart: null, procStart: 7 };
+    let touched = false;
+    const startTime = async (pid: number) => {
+      if (!touched) {
+        touched = true;
+        // 다른 서버: other1 이 끝나 지우고, other2 의 procStart 를 채우고, 새 채팅을 더한다
+        const cur = JSON.parse(fs.readFileSync(file, 'utf8')).filter((e: any) => e.pid !== other1.pid).map((e: any) => (e.pid === other2.pid ? { ...e, procStart: 123 } : e));
+        fs.writeFileSync(file, JSON.stringify([...cur, added]));
+      }
+      return pid === orphan.pid ? recorded : procStartTime(pid);
+    };
+    expect(await cleanupOrphans(cfgDir, process.platform, startTime)).toBe(1);
+    expect(touched).toBe(true);
+    expect(await gone(orphan.pid!)).toBe(true);
+    const after = readPids(cfgDir);
+    expect(after.map((e) => e.pid)).toEqual([other2.pid!, added.pid].sort((a, b) => a - b));
+    expect(after.find((e) => e.pid === other2.pid)!.procStart).toBe(123);
+    expect(after.find((e) => e.pid === added.pid)).toEqual(added);
+  } finally { for (const p of [owner, other1, other2, orphan]) kill(p); try { process.kill(grand, 'SIGKILL'); } catch { /* 무시 */ } }
 });
