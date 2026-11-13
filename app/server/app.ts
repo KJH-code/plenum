@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { configDir, loadConfig, saveConfig } from './config.ts';
+import { configDir, loadConfig, saveConfig, type Config } from './config.ts';
 import { detect } from './git.ts';
 import { readKit } from './kit.ts';
 import { getInstall, startInstall } from './install.ts';
@@ -22,6 +22,19 @@ const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
 
 export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher }
+
+// 3단계 라우트 모듈이 받는 것. 각 모듈은 `async function handleXxx(ctx: RouteCtx): Promise<boolean>`(처리했으면 true)
+export interface RouteCtx {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  method: string;
+  parts: string[];            // /api/ 뒤 경로 조각(디코딩됨)
+  cfg: Config;
+  cfgDir: string;
+  env: NodeJS.ProcessEnv;
+  body(): Promise<any>;       // JSON 본문(1MB 제한)
+  send(status: number, body: unknown): void;
+}
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
   const text = JSON.stringify(body);
@@ -177,6 +190,10 @@ export function createHandler(opts: ServerOptions = {}) {
         return send(res, 200, { ok: true });
       }
     }
+    // ── 3단계 라우트 (단위마다 한 줄: if (await handleXxx(ctx)) return;) ──
+    const ctx: RouteCtx = { req, res, method, parts, cfg, cfgDir, env, body: () => readBody(req), send: (status, body) => send(res, status, body) };
+    void ctx;
+    // ── 3단계 라우트 끝 ──
     throw new UserError(404, `없는 API: ${method} /api/${parts.join('/')}`);
   }
 
