@@ -21,9 +21,11 @@ console.log(`Plenum: http://127.0.0.1:${port}  (설정 ${cfgDir})`);
 // 두 번째 신호면 기다리지 않고 트리째 죽이고 끝낸다.
 let stopping = false;
 async function shutdown(sig: string) {
-  if (stopping) { chats.killAllNow(); process.exit(1); }
+  if (stopping) { console.log(`Plenum: ${sig} 다시 받음 — 채팅 claude 를 바로 끝낸다`); chats.killAllNow(); process.exit(1); }
   stopping = true;
+  console.log(`Plenum: ${sig} 받음 — 채팅 claude 를 정리하고 끈다`);
   try { await chats.shutdownAll(sig === 'SIGHUP' ? 3000 : undefined); } catch { /* 무시 */ }
+  console.log('Plenum: 정리 끝, 서버를 끈다');
   server.closeAllConnections?.();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
