@@ -3,7 +3,7 @@
 Claude Code 세션 런처. 흡기 플레넘처럼 모았다가 나눠 보낸다.
 
 - **kit 컴파일러**: 사람이 고치는 원본 `kit/`(중립 형식)을 Claude Code 플러그인 `build/claude-code/`로 만든다. 워커 하나의 모델을 바꾸면 고치는 파일은 하나다
-- **앱** (`app/`, 2단계): 프로젝트 홈, 설정 › 워커 보기·편집(AI·노력도 → 자동 빌드·commit·push), 소스/설치본 버전 비교와 설치본 반영. 세션·채팅은 이후 단계
+- **앱** (`app/`, 3단계): 프로젝트 홈, 프로젝트 창 안의 Claude Code 채팅 세션(질문·승인 카드, 지난 세션 이어하기, 터미널로 열기, 작동 중 워커, 한도), 설정 › 워커 보기·편집(AI·노력도 → 자동 빌드·commit·push), 소스/설치본 버전 비교와 설치본 반영
 
 ## 컴파일러 쓰기
 
@@ -60,6 +60,21 @@ cd app && npm run typecheck && npm test && npm run e2e
 Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu·windows에서 한글 이름 임시 폴더로 돌린다(`.github/workflows/test.yml`).
 
 ## 변경 기록
+
+### 0.3.0
+- 프로젝트 창 = 세션 화면. 새 세션은 앱 안 채팅: `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio`(구독 로그인, `--bare` 없음). 모델·노력도 고르기(노력도는 `claude --help`에 `--effort`가 있을 때만)
+  - 질문 카드(AskUserQuestion): 선택지 버튼, 추천 강조, 기타 직접 입력. 답은 `updatedInput.answers`
+  - 승인 카드: 허용 / 이 세션 동안 허용 / 거부… + 이유(Claude에 전달). "이 세션 동안"은 `permission_suggestions` 중 `addRules`의 규칙만 destination `session`으로 보낸다 — `setMode acceptEdits`까지 보내면 그 뒤 `rm`이 묻지 않고 실행됐다(녹화로 확인). Edit·Write는 접힌 diff
+  - 도구 호출은 "도구 N번 · 이름들" 한 줄로 접고, Agent 호출은 턴마다 워커 표. 마크다운은 직접 렌더(HTML 이스케이프, http·https 링크만)
+  - 처리 못 하는 요청은 "터미널로 열기" 안내 카드. `system/init`의 `claude_code_version`이 2.1.248보다 낮으면 경고
+  - 새로고침·재연결해도 서버가 들고 있던 이벤트를 다시 받아 답 안 한 카드가 다시 뜬다. 같은 프로젝트에서 응답 중인 세션이 있으면 경고(막지 않음)
+- 지난 세션: `~/.claude/projects`의 기록을 줄 안 `cwd`로 프로젝트와 대조(폴더 이름은 한글이 `-`로 바뀌어 겹친다). 제목은 AI 제목 우선, 없으면 첫 질문. 명령만 친 세션은 숨김. 이어하기(`--resume`)는 지난 기록을 다시 그린다
+- 터미널로 열기: 채팅 프로세스를 먼저 끝내고(interrupt → stdin 닫기 → 시간 넘으면 트리째) Windows Terminal(없으면 cmd `start`)의 PowerShell에서 `claude --resume <ID>`. 처음 여는 폴더는 trust 창 안내. 터미널에서 열려 있는 세션은 채팅 이어하기를 막는다
+- 작동 중: 채팅 세션은 stream(`system/task_*`), 터미널 세션은 jh-kit 2.2.0 알림 훅(`POST /api/hook`, 설정 폴더 `server.json`의 포트). 워커는 id로 짝, 턴 끝에 끝난 워커를 지우고 백그라운드 워커는 결과까지 남긴다. 12시간 소식 없는 터미널 세션은 빠진다
+- 한도: `rate_limit_event.rate_limit_info.unifiedWindows`의 5시간·주간 %를 상단에 "HH:MM 기준"과 함께(값 없으면 "—", 마지막 값은 설정 폴더 `limits.json`). 한도 rejected면 보내기를 막고 리셋 시각
+- 서버 종료: Ctrl+C·창 닫기(SIGHUP)·SIGTERM에 채팅 claude를 정리하고, 비정상 종료로 남은 claude는 다음 시작 때 정리(`chat-pids.json`). `npm start`·`npm run serve`는 `node --import tsx`(tsx CLI는 SIGHUP을 서버에 넘기지 않아 서버가 고아로 남았다)
+- 서버가 꺼진 탭에서 요청하면 "Failed to fetch" 대신 "Plenum 서버가 꺼져 있음 — 터미널에서 다시 켜기"
+- 테스트 fixture는 진짜 claude 2.1.323 녹화(`app/test/fixtures/`, 개인 정보 검사 포함). 커밋 이메일 검사(`.githooks/pre-push`, CI `emails`)
 
 ### 0.2.0
 - 설정 › 워커 편집: 행을 고르면 아래 수정란에 열린다. AI·노력도만 드롭다운으로 바꾸고(도구·턴·격리·하는 일은 보기 + 외부 에디터), 바꾼 칸 강조·"수정 중"·쓰는 모드 안내·Fable 경고. 행 펼치기와 오른쪽 동작 버튼 줄은 없앴다
