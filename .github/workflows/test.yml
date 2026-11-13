@@ -12,6 +12,27 @@ permissions:
   contents: read
 
 jobs:
+  emails:
+    # 공개 레포: push·PR 범위 커밋의 author/committer 이메일이 noreply 목록 밖이면 실패 (.githooks/check-commit-emails.sh — 로컬 pre-push 훅과 같은 검사)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 커밋 이메일 검사 (noreply 만)
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then set -- "$PR_BASE..$PR_HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then set -- "$BEFORE..$AFTER"
+          else set -- origin/main..HEAD; fi
+          echo "검사 범위: $1"
+          sh .githooks/check-commit-emails.sh "$1"
+
   test:
     strategy:
       fail-fast: false

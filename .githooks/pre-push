@@ -1,0 +1,10 @@
+#!/bin/sh
+# git pre-push 훅: push 하는 범위의 커밋 이메일 검사. 켜기(클론마다 한 번): git config core.hooksPath .githooks
+dir=$(dirname "$0")
+z=0000000000000000000000000000000000000000
+while read -r lref lsha rref rsha; do
+  [ "$lsha" = "$z" ] && continue                       # 지우는 push
+  if [ "$rsha" = "$z" ]; then "$dir/check-commit-emails.sh" "$lsha" --not --remotes || exit 1   # 새 브랜치
+  else "$dir/check-commit-emails.sh" "$rsha..$lsha" || exit 1; fi
+done
+exit 0

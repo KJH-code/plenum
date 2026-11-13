@@ -38,3 +38,4 @@ DevVault: Projects/jh-kit
 - 개발 의존성은 lock 파일(npm 11로 생성)로 고정. npm 10에서 lock 없이 `npm install` 하면 vitest 4에서 멈춘다
 - 커밋 메시지는 한국어. 커밋 본문에 모델 이름을 넣지 않는다. 예외: 끝의 `Co-Authored-By: Claude …` 트레일러
 - 커밋 작성자: author = `KJH-code <248580898+KJH-code@users.noreply.github.com>`, committer = `Claude <noreply@anthropic.com>` (클라우드 세션 SSH 서명이 Verified로 뜬다). `--reset-author`는 쓰지 않는다(프로필 기여에서 빠진다)
+- 이메일 검사: push 할 때 `.githooks/pre-push`가 범위 커밋의 author·committer 이메일을 noreply 목록과 대조한다. 클론마다 한 번 `git config core.hooksPath .githooks`. 클라우드 세션은 환경 변수 `GIT_AUTHOR_EMAIL`·`GIT_COMMITTER_EMAIL`이 개인 이메일이라 git config 보다 우선한다 — 커밋마다 덮어쓴다. CI `emails` 작업도 같은 검사
