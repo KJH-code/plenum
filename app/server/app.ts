@@ -17,11 +17,17 @@ import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
 import { absolutePath, checkCloneDir, checkKitRepo } from './paths.ts';
+import { createChatManager, type ChatDeps, type ChatManager } from './chat.ts';
+import { handleChat } from './chatRoutes.ts';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
 
-export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher }
+export interface ServerOptions {
+  cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher;
+  chats?: ChatManager;                 // 채팅 매니저(main.ts 가 만들어 넣어 종료 때 정리). 없으면 여기서 만든다
+  chatDeps?: Partial<ChatDeps>;        // chats 를 여기서 만들 때 쓸 연결(테스트·다른 단위)
+}
 
 // 3단계 라우트 모듈이 받는 것. 각 모듈은 `async function handleXxx(ctx: RouteCtx): Promise<boolean>`(처리했으면 true)
 export interface RouteCtx {
@@ -74,10 +80,21 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   fs.createReadStream(file).pipe(res);
 }
 
+// 채팅 워커 이벤트에 붙일 모델: kit 레포 워커 정의(subagent_type 의 "플러그인:" 앞머리는 뗀다)
+export function workerModel(cfgDir: string, subagentType: string): string | null {
+  try {
+    const k = readKit(loadConfig(cfgDir).kitRepoPath);
+    if (!k.ok) return null;
+    const name = subagentType.replace(/^[^:]+:/, '');
+    return k.workers.find((w) => w.name === name)?.model ?? null;
+  } catch { return null; }
+}
+
 export function createHandler(opts: ServerOptions = {}) {
   const cfgDir = opts.cfgDir ?? configDir(opts.env);
   const env = opts.env ?? process.env;
   const launcher = opts.launcher ?? launch;
+  const chats = opts.chats ?? createChatManager({ cfgDir, env, deps: { workerModel: (t) => workerModel(cfgDir, t), ...opts.chatDeps } });
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, parts: string[]) {
     const method = req.method || 'GET';
@@ -192,7 +209,7 @@ export function createHandler(opts: ServerOptions = {}) {
     }
     // ── 3단계 라우트 (단위마다 한 줄: if (await handleXxx(ctx)) return;) ──
     const ctx: RouteCtx = { req, res, method, parts, cfg, cfgDir, env, body: () => readBody(req), send: (status, body) => send(res, status, body) };
-    void ctx;
+    if (await handleChat(ctx, chats)) return;
     // ── 3단계 라우트 끝 ──
     throw new UserError(404, `없는 API: ${method} /api/${parts.join('/')}`);
   }
