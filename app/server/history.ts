@@ -111,6 +111,14 @@ function sessionFiles(claudeHome: string, only?: string): { sid: string; file: s
   return out;
 }
 
+// 스킬·슬래시 명령으로 시작한 첫 질문(<command-message>…<command-name>/x</command-name><command-args>y</command-args>)은 "/x y" 로 보인다
+export function promptLabel(s: string): string {
+  const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(s);
+  if (!name) return s;
+  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(s);
+  return [name[1].trim(), args ? args[1].trim() : ''].filter(Boolean).join(' ');
+}
+
 function oneLine(s: string, n: number): string {
   return Array.from(s.replace(/\s*[\r\n]+\s*/g, ' ').trim()).slice(0, n).join('');
 }
@@ -128,7 +136,7 @@ export async function listSessions(projectPath: string, opts: HistoryOptions): P
     const m = meta[sid]?.mode;
     out.push({
       id: sid,
-      title: ai !== null ? ai.trim() : oneLine(p.firstQuestion, 80),
+      title: ai !== null ? ai.trim() : oneLine(promptLabel(p.firstQuestion), 80),
       titleSource: ai !== null ? 'ai' : 'first',
       startedAt: p.firstAt,
       lastAt: p.lastAt,

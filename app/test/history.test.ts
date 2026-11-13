@@ -214,3 +214,9 @@ describe('라우트', () => {
     } finally { await srv.close(); }
   });
 });
+
+it('스킬로 시작한 첫 질문은 "/이름 인자" 로 보인다', async () => {
+  const { promptLabel } = await import('../server/history.ts');
+  expect(promptLabel('<command-message>jh-kit:start</command-message>\n<command-name>/jh-kit:start</command-name>\n<command-args>Plenum 3단계</command-args>')).toBe('/jh-kit:start Plenum 3단계');
+  expect(promptLabel('그냥 질문')).toBe('그냥 질문');
+});
