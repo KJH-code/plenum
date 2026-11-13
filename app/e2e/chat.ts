@@ -10,7 +10,7 @@ import { chromium, type Page } from 'playwright';
 import { createHandler, listen } from '../server/app.ts';
 import type { Command } from '../server/open.ts';
 import { makeFakeStreamClaude } from '../test/fakeclaudeStream.ts';
-import { copyHistory, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
+import { cardScript, copyHistory, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
 
 const SERVER_DOWN = 'Plenum 서버가 꺼져 있음 — 터미널에서 다시 켜기';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 채팅-'));
@@ -236,6 +236,38 @@ try {
   assert.deepEqual(await page.locator('.bubble').allInnerTexts(), ['다른 탭', '이 탭에서 이어']);
   assert.equal(fake.argsCalls().length, argsBefore, '살아 있는 채팅이 있는데 claude 를 새로 띄웠다');
   pass('(e) 살아 있는 채팅 세션을 목록에서 이어하기 → forwarded → 같은 채팅 화면에 글이 감(새 claude 없음)');
+
+  // ── (f) 카드 대기 채팅(다른 탭) 세션을 목록에서 이어하기 → 409 awaiting-card → 글 유지·안내·"그 채팅으로 가기" → 그 채팅에 카드와 넘어간 글 ──
+  const fScript = path.join(root, 'card-wait.jsonl');
+  cardScript(fScript, S01);
+  env.FAKE_STREAM_SCRIPT = fScript;
+  await row01.getByRole('button').first().click();
+  await row01.getByRole('button', { name: '이어하기' }).click();
+  await page.getByTestId('past-transcript').waitFor(T);
+  const waiting = await (await fetch(`${base}/api/projects/${proj.id}/chats`, { method: 'POST', headers: H, body: JSON.stringify({ text: '카드 탭', resume: S01 }) })).json();
+  for (let i = 0; i < 100; i++) {
+    const cs = await (await fetch(`${base}/api/projects/${proj.id}/chats`)).json();
+    if (cs.some((c: any) => c.chatId === waiting.chat.chatId && c.state === 'waiting')) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const argsF = fake.argsCalls().length;
+  await sendText('카드 때문에 막힐 글');
+  const blocked = page.getByTestId('card-blocked');
+  await blocked.waitFor(T);
+  assert.match(await blocked.innerText(), /답을 기다리는 카드가 있다/);
+  assert.equal(await page.getByLabel('메시지', { exact: true }).inputValue(), '카드 때문에 막힐 글', '409 뒤 입력창 글이 지워졌다');
+  assert.equal(await page.getByTestId('past-transcript').count(), 1, '409 인데 화면이 바뀌었다');
+  assert.equal(fake.argsCalls().length, argsF, '카드 대기 채팅이 있는데 claude 를 새로 띄웠다');
+  await blocked.getByRole('button', { name: '그 채팅으로 가기' }).click();
+  const wCard = page.getByTestId('permission-card').filter({ hasText: 'touch 카드.txt' });
+  await wCard.getByRole('button', { name: '허용', exact: true }).waitFor(T);
+  assert.equal(await page.getByTestId('past-transcript').count(), 0, '그 채팅 화면으로 바뀌지 않았다');
+  assert.equal(await page.getByLabel('메시지', { exact: true }).inputValue(), '카드 때문에 막힐 글', '그 채팅 입력창에 글이 넘어가지 않았다');
+  assert.deepEqual(await page.locator('.bubble').allInnerTexts(), ['카드 탭']);
+  // 뒤 흐름이 "응답 중인 세션" 경고를 받지 않게 카드에 답해 끝낸다
+  await wCard.getByRole('button', { name: '허용', exact: true }).click();
+  await page.getByTestId('assistant-text').filter({ hasText: '카드 답을 받았다' }).waitFor(T);
+  pass('(f) 카드 대기 채팅 세션을 목록에서 이어하기 → 409 awaiting-card → 글 유지·안내 → "그 채팅으로 가기" → 그 채팅에 카드와 넘어간 글');
 
   // ── 노력도: --effort 없는 claude → 드롭다운 없음 ──
   env.FAKE_CLAUDE_HELP_EFFORT = '0';

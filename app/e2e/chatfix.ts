@@ -35,6 +35,14 @@ export function twoTurnScript(file: string, sid: string) {
     { dir: 'out', msg: TEXT('msg_turn2', '둘째 턴 답') }, { dir: 'out', msg: RESULT('둘째 턴 답') }, { dir: 'exit', code: 0 }]);
 }
 
+// 승인 카드 하나를 내고 답을 기다린다(sid 세션). 카드 대기 채팅을 목록에서 이어하기(409 awaiting-card) 흐름용
+export function cardScript(file: string, sid: string) {
+  writeScript(file, [...HELLO, { dir: 'out', msg: INIT(sid) },
+    { dir: 'out', msg: { type: 'control_request', request_id: 'card-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'touch 카드.txt', description: '카드 대기' }, permission_suggestions: [] } } },
+    { dir: 'in', msg: { type: 'control_response', response: { request_id: 'card-1' } } },
+    { dir: 'out', msg: TEXT('msg_card', '카드 답을 받았다') }, { dir: 'out', msg: RESULT('카드 답을 받았다') }, { dir: 'exit', code: 0 }]);
+}
+
 // 채팅이 처리 못 하는 control_request
 export function unknownScript(file: string) {
   writeScript(file, [...HELLO, { dir: 'out', msg: INIT('bbbbbbbb-1111-4222-8333-444444444444') },

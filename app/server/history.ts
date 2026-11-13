@@ -117,6 +117,10 @@ function isCommandLine(s: string): boolean {
   return /^\s*<(command-name|local-command-stdout|local-command-stderr)>/.test(s);
 }
 
+function isCommandOutput(s: string): boolean {
+  return /^\s*<(local-command-stdout|local-command-stderr)>/.test(s);
+}
+
 // 스킬·슬래시 명령으로 시작한 첫 질문(<command-message>…<command-name>/x</command-name><command-args>y</command-args>)은 "/x y" 로 보인다
 export function promptLabel(s: string): string {
   const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(s);
@@ -214,7 +218,12 @@ export async function readTranscript(projectPath: string, sid: string, opts: His
   await forEachLine(file, (j) => {
     const at = typeof j.timestamp === 'string' ? j.timestamp : null;
     const h = humanText(j);
-    if (h !== null) { push({ type: 'user', text: h, at }); return; }
+    if (h !== null) {
+      // 명령 출력 줄은 건너뛰고, 명령·스킬 호출 줄은 "/model"·"/이름 인자" 한 줄로
+      if (isCommandOutput(h)) return;
+      push({ type: 'user', text: isCommandLine(h) || /^\s*<command-message>/.test(h) ? promptLabel(h) : h, at });
+      return;
+    }
     if (j.type === 'assistant' && !j.isSidechain) {
       const t = assistantText(j);
       if (t !== null) push({ type: 'assistant-text', text: t, at });

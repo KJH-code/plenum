@@ -12,7 +12,7 @@ import {
 import { claudeCaps, type ClaudeCaps } from './claudecaps.ts';
 import { UserError } from './errors.ts';
 import { commandFor, resolveCommand } from './open.ts';
-import { addPid, killTree, killTreeNow, removePid } from './proc.ts';
+import { addPid, killTree, killTreeNow, ownerStartTime, removePid } from './proc.ts';
 import { readLimits, saveLimits, updateSession } from './store.ts';
 
 export interface ChatDeps {
@@ -190,6 +190,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   const chats = new Map<string, Chat>();
   const globalListeners = new Set<(chat: ChatInfo, ev: ChatEvent) => void>();
   let limits: Limits | null = readLimits(cfgDir);
+  void ownerStartTime(); // PID 파일 ownerStart: 서버 시작 때 한 번 읽어 둔다
 
   const info = (c: Chat): ChatInfo => ({ ...c.info });
   const must = (chatId: string): Chat => {
@@ -412,6 +413,13 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       const caps = await deps.caps();
       if (caps.found && !caps.effort) throw new UserError(400, `이 Claude Code 버전에는 --effort 가 없다${caps.version ? ` (${caps.version})` : ''} — 노력도 없이 시작하거나 claude update`);
     }
+    // 이어할 세션의 채팅이 닫는 중이면 끝나기를 기다린 뒤(최대 closeWaitMs) 보통 경로로 — 새로 띄운다
+    const closingChat = typeof opts?.resume === 'string' ? liveBySession(opts.resume) : null;
+    if (closingChat && isClosing(closingChat)) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([closingChat.exited, new Promise<void>((r) => { timer = setTimeout(r, closeWaitMs); })]);
+      clearTimeout(timer);
+    }
     return startNow(project, opts);
   }
 
@@ -500,8 +508,9 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     if (!isObj(reply) || typeof reply.requestId !== 'string') throw new UserError(400, 'requestId 가 없다');
     const p = c.cards.get(reply.requestId);
     if (!p) throw new UserError(404, '없는 카드');
-    if (p.resolved) throw new UserError(409, '이미 답한 카드', CARD_ANSWERED);
+    // 끝난 채팅은 카드가 취소(resolved)돼 있다 → 끝남을 먼저 본다
     if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다', ENDED);
+    if (p.resolved) throw new UserError(409, '이미 답한 카드', CARD_ANSWERED);
     const card = p.card;
     let response: Record<string, unknown>;
     let outcome: 'allow' | 'allow-session' | 'deny' | 'answered';
@@ -548,6 +557,9 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     if (c.info.state === 'waiting' && pendingCount(c) === 0) setState(c, 'running');
     return info(c);
   }
+
+  // close 가 불렸거나 stdin 이 닫혔다 — 곧 끝난다
+  function isClosing(c: Chat): boolean { return !!c.closing || !c.child.stdin?.writable; }
 
   function liveBySession(sessionId: string): Chat | null {
     for (const c of chats.values()) if (c.info.sessionId === sessionId && c.info.state !== 'ended') return c;

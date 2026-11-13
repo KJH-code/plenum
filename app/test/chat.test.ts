@@ -396,6 +396,53 @@ describe('합성 대본', () => {
     expect(s.fake.argsCalls()).toHaveLength(1);
   });
 
+  it('respond: 카드 대기 중 close 된 채팅에 답하면 409 chat-ended(card-answered 아님)', async () => {
+    const s = setup();
+    const file = path.join(s.root, 'waiting.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') },
+      { dir: 'out', msg: { type: 'control_request', request_id: 'r-1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' }, permission_suggestions: [] } } },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'r-1' } } }, { dir: 'exit', code: 0 }]);
+    const m = manager(s, s.fake.env({ script: file }));
+    const id = (await m.start(s.project, { text: '처음' })).chat.chatId;
+    await waitEvent(m, id, 'card');
+    await m.close(id);
+    expect(m.get(id)!.state).toBe('ended');
+    let err: any;
+    try { m.respond(id, { requestId: 'r-1', action: 'allow' }); } catch (e) { err = e; }
+    expect(err?.status).toBe(409);
+    expect(err.reason).toBe('chat-ended');
+    expect(s.fake.stdin().filter((x) => x.type === 'control_response')).toHaveLength(0);
+  });
+
+  it('resume: 닫는 중인 채팅의 세션을 이어하면 끝나기를 기다렸다가 --resume 으로 새로 띄운다(201)', async () => {
+    const s = setup();
+    const sid = 'b5b49096-5604-499f-a80b-49f35d8d09bb';
+    const file = path.join(s.root, 'idle.jsonl');
+    writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', sid) }, { dir: 'out', msg: RESULT }, { dir: 'in', msg: { type: 'user' } }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    const env = s.fake.env({ script: file });
+    const chats = manager(s, env);
+    const srv = await inProcess({ cfgDir: s.cfgDir, env, chats });
+    try {
+      const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+      const first = (await srv.call('POST', `/api/projects/${pid}/chats`, { text: '처음' })).body.chat.chatId;
+      await waitEvent(chats, first, 'state', (e) => e.state === 'idle');
+      const closing = chats.close(first); // 기다리지 않는다
+      expect(chats.get(first)!.state).toBe('idle');
+      const r = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '이어', resume: sid });
+      expect(r.status).toBe(201);
+      expect(r.body.forwarded).toBeUndefined();
+      expect(r.body.chat.chatId).not.toBe(first);
+      expect(chats.get(first)!.state).toBe('ended');
+      await closing;
+      expect(await until(() => s.fake.argsCalls().length === 2)).toBe(true);
+      const calls = s.fake.argsCalls();
+      expect(calls[1].args.slice(-2)).toEqual(['--resume', sid]);
+      expect(events(chats, r.body.chat.chatId).filter((e) => e.type === 'user').map((e: any) => e.text)).toEqual(['이어']);
+    } finally {
+      await srv.close();
+    }
+  });
+
   it('PATH 에 claude 가 없으면 400', async () => {
     const s = setup();
     const m = manager(s, { ...s.fake.env(), PATH: path.join(s.root, '빈 PATH') });
@@ -559,7 +606,10 @@ describe('끝난 채팅·훅 (지난 세션 running, 작동 중)', () => {
     fs.writeFileSync(path.join(home, 'projects', 'x', `${S01}.jsonl`), ls.map((l) => JSON.stringify(l)).join('\n') + '\n');
     const file = path.join(s.root, 'idle.jsonl');
     writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323', S01) }, { dir: 'out', msg: RESULT }, { dir: 'in', msg: { type: 'user' } }, { dir: 'exit', code: 0 }]);
+    // 테스트를 돌리는 env 에 PLENUM_NOTIFY 가 있어도(예: PLENUM_NOTIFY=0 npx vitest) 서버 env 에는 없게 만든다
     const env = s.fake.env({ script: file });
+    delete env.PLENUM_NOTIFY;
+    expect(env.PLENUM_NOTIFY).toBeUndefined();
     const chats = createChatManager({ cfgDir: s.cfgDir, env, closeWaitMs: 3000 });
     managers.push(chats);
     const srv = await inProcess({ cfgDir: s.cfgDir, env, chats, claudeHome: home });
@@ -572,10 +622,9 @@ describe('끝난 채팅·훅 (지난 세션 running, 작동 중)', () => {
       const chatId = (await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕' })).body.chat.chatId;
       await waitEvent(chats, chatId, 'state', (e) => e.state === 'idle');
       expect(await running()).toBe('chat');
-      // 채팅 claude 만 PLENUM_NOTIFY=0 을 받았다. 서버 env·프로세스 env(터미널로 열기가 물려줌)에는 없다
+      // 채팅 claude 만 PLENUM_NOTIFY=0 을 받았다. 서버 env 는 그대로(터미널로 열기는 terminal.test 에서 본다)
       expect(s.fake.argsCalls()[0].notify).toBe('0');
       expect(env.PLENUM_NOTIFY).toBeUndefined();
-      expect(process.env.PLENUM_NOTIFY).toBeUndefined();
       expect(chatEnv(env).PLENUM_NOTIFY).toBe('0');
       expect(env.PLENUM_NOTIFY).toBeUndefined();
 

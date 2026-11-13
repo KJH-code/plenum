@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export interface Command { cmd: string; args: string[]; verbatim?: boolean }
+// env: 실행 환경(없으면 서버 env 를 물려준다)
+export interface Command { cmd: string; args: string[]; verbatim?: boolean; env?: NodeJS.ProcessEnv }
 export type LaunchResult = { ok: true } | { ok: false; message: string };
 
 export function folderCommand(dir: string, platform = process.platform): Command {
@@ -110,7 +111,7 @@ export function launchDetached(c: Command): Promise<LaunchResult> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(c.cmd, c.args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: !!c.verbatim });
+      child = spawn(c.cmd, c.args, { detached: true, stdio: 'ignore', windowsVerbatimArguments: !!c.verbatim, ...(c.env ? { env: c.env } : {}) });
     } catch (e: any) {
       resolve({ ok: false, message: e.message });
       return;
