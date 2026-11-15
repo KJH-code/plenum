@@ -93,7 +93,6 @@ export function ProjectPage({ id }: { id: string }) {
   const [targetKey, setTargetKey] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [term, setTerm] = useState<{ sid: string; chatLive: boolean } | null>(null);
-  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => { api.projects().then((ps) => setP(ps.find((x) => x.id === id) ?? null)).catch(() => setP(null)); }, [id]);
 
@@ -117,7 +116,8 @@ export function ProjectPage({ id }: { id: string }) {
   // 작동 중: 2초마다, 탭이 숨겨지면 멈춘다
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
-    const tick = () => { setNow(Date.now()); api.activity(id).then((a) => setActivity(a.sessions)).catch(() => {}); };
+    // 경과 시계는 SessionSide 가 1초마다 따로 돈다(여기 tick 은 데이터만)
+    const tick = () => { api.activity(id).then((a) => setActivity(a.sessions)).catch(() => {}); };
     const startPoll = () => { if (!timer) { tick(); timer = setInterval(tick, ACTIVITY_MS); } };
     const stopPoll = () => { if (timer) { clearInterval(timer); timer = undefined; } };
     const onVis = () => (document.hidden ? stopPoll() : startPoll());
@@ -170,7 +170,7 @@ export function ProjectPage({ id }: { id: string }) {
           <SessionSide
             sessions={sessions} sessionsErr={sessionsErr} selected={selected}
             pastPicked={!!pickedSession && !pickedSession.running}
-            activity={activity} caps={caps} model={model} effort={effort} now={now}
+            activity={activity} caps={caps} model={model} effort={effort}
             onModel={(m) => { setModel(m); store.set('plenum.chat.model', m); }}
             onEffort={(e) => { setEffort(e); store.set('plenum.chat.effort', e); }}
             onNew={() => { setPicked(null); go({ kind: 'new', n: Date.now() }); }}

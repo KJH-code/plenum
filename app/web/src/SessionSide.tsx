@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { ActiveSession, SessionSummary } from './api';
 import type { ClaudeCaps } from './api';
 import { ModelChip, workerState } from './Chat';
@@ -32,7 +33,6 @@ export interface SideProps {
   caps: ClaudeCaps | null;
   model: string;
   effort: string;
-  now: number;
   onModel(m: string): void;
   onEffort(e: string): void;
   onNew(): void;
@@ -41,8 +41,23 @@ export interface SideProps {
   onTerminal(sid: string): void;
 }
 
+// 작동 중 경과 시계: 활동 폴링(2초)과 따로 1초마다 다시 그린다. 폴링 응답이 오면 그 받은 시각으로 맞춘다
+// (요청 전에 잰 시각으로 그리면 방금 시작한 워커가 음수 → 0:00 에 머문다)
+export function useActivityClock(activity: ActiveSession[]): number {
+  const [now, setNow] = useState(() => Date.now());
+  const running = activity.some((a) => a.workers.some((w) => w.state === 'running'));
+  useEffect(() => { setNow(Date.now()); }, [activity]);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  return now;
+}
+
 export function SessionSide(p: SideProps) {
   const workers = p.activity.flatMap((a) => a.workers.map((w) => ({ w, s: a })));
+  const now = useActivityClock(p.activity);
   return (
     <aside className="pside" aria-label="세션">
       <button type="button" className="btn new-session" onClick={p.onNew}>
@@ -99,7 +114,7 @@ export function SessionSide(p: SideProps) {
             <span className={`dot ${w.state}`} aria-hidden="true" />
             <span className="mono aname ell">{w.worker.replace(/^[^:]+:/, '') || '[워커]'}</span>
             <ModelChip model={w.model} />
-            <span className="astate">{workerState(w, p.now)}</span>
+            <span className="astate">{workerState(w, now)}</span>
           </div>
         ))}
         <span className="hint side-note">채팅 세션은 출력에서, 터미널 세션은 jh-kit 훅 알림으로</span>

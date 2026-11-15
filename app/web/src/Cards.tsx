@@ -80,15 +80,18 @@ export function QuestionCard({ card, resolved, onReply }: { card: Extract<Card, 
 }
 
 // ── 승인 카드 ─────────────────────────────────────────
-function permTitle(tool: string): string {
-  if (tool === 'Bash') return '명령을 실행해도 될까?';
+// 명령 도구: 입력에 문자열 command 가 있는 도구(Bash·PowerShell 등)
+const commandOf = (input: unknown): string | null => (isObj(input) && typeof input.command === 'string' ? input.command : null);
+function permTitle(tool: string, input: unknown): string {
+  if (commandOf(input) !== null) return '명령을 실행해도 될까?';
   if (tool === 'Edit' || tool === 'MultiEdit') return '파일을 고쳐도 될까?';
   if (tool === 'Write') return '파일을 써도 될까?';
   return `${tool} 도구를 써도 될까?`;
 }
-function permBody(tool: string, input: unknown): string {
+function permBody(input: unknown): string {
+  const command = commandOf(input);
+  if (command !== null) return command;
   if (isObj(input)) {
-    if (tool === 'Bash' && typeof input.command === 'string') return input.command;
     if (typeof input.file_path === 'string') return input.file_path;
     if (typeof input.path === 'string') return input.path;
     if (typeof input.url === 'string') return input.url;
@@ -112,12 +115,15 @@ export function PermissionCard({ card, resolved, cwd, onReply }: { card: Extract
   const [reason, setReason] = useState('');
   const open = !resolved;
   const rules = card.sessionRules.map((r) => r.ruleContent ?? r.toolName).join(', ');
+  // 설명 줄: 요청의 description, 없으면 명령 도구 입력의 description
+  const inputDesc = commandOf(card.input) !== null && isObj(card.input) && typeof card.input.description === 'string' ? card.input.description : undefined;
+  const description = card.description || inputDesc;
   const deny = () => send({ requestId: card.requestId, action: 'deny', ...(reason.trim() ? { reason: reason.trim() } : {}) });
   return (
     <div role="group" aria-label="승인 요청" className={`card${open ? ' pending' : ''}`} data-testid="permission-card">
-      <div className="card-head"><span className="tag warn">승인</span><span className="card-title">{permTitle(card.toolName)}</span></div>
-      <code className="cmd">{permBody(card.toolName, card.input)}</code>
-      <span className="meta">{[card.toolName, card.description, `작업 폴더 ${cwd}`].filter(Boolean).join(' · ')}</span>
+      <div className="card-head"><span className="tag warn">승인</span><span className="card-title">{permTitle(card.toolName, card.input)}</span></div>
+      <code className="cmd">{permBody(card.input)}</code>
+      <span className="meta">{[card.toolName, description, `작업 폴더 ${cwd}`].filter(Boolean).join(' · ')}</span>
       {card.diff && (
         <details className="diff-fold">
           <summary>바뀌는 내용 보기</summary>

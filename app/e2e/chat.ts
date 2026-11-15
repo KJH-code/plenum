@@ -103,7 +103,7 @@ try {
   assert.equal(r[0].response.behavior, 'allow');
   assert.deepEqual(r[1].response, { behavior: 'allow', updatedInput: { command: 'touch a.txt', description: 'Create a.txt' } });
   assert.deepEqual(r[2].response.updatedPermissions, [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch c.txt' }], behavior: 'allow', destination: 'session' }]);
-  assert.deepEqual(r[3].response, { behavior: 'deny', message: '사용자가 거부함. 이유: 삭제는 내가 직접 할게' });
+  assert.deepEqual(r[3].response, { behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 삭제는 내가 직접 할게' });
   const tools = page.getByTestId('tools');
   assert.ok(await tools.count() >= 1);
   assert.match(await tools.first().locator('summary').innerText(), /^도구 \d+번 · /);
@@ -147,7 +147,7 @@ try {
 
   // ── (g) kit 워커(jh-kit:w-implement-lite): 워커 표에 모델 칩, 도는 동안 왼쪽 작동 중에 그 줄, 턴이 끝나면 사라짐 ──
   const gScript = path.join(root, 'kit-worker.jsonl');
-  kitWorkerScript(gScript, 'eeeeeeee-1111-4222-8333-444444444444', 6000);
+  kitWorkerScript(gScript, 'eeeeeeee-1111-4222-8333-444444444444', 9000);
   env.FAKE_STREAM_SCRIPT = gScript;
   await page.getByRole('button', { name: '새 세션' }).click();
   await sendText('kit 워커');
@@ -159,13 +159,24 @@ try {
   await actRow.waitFor(T);
   assert.equal(await actRow.getByTestId('model-chip').innerText(), 'haiku', '작동 중 줄과 워커 표 칩이 다르다');
   assert.equal(await kitRun.getAttribute('data-state'), 'running', '작동 중 줄을 보기 전에 워커가 끝났다(대본 지연이 짧다)');
+  // 왼쪽 경과 시간: 1초 시계로 오른다(0:00 에 멈추지 않고, 2초 폴링 박자로 건너뛰지도 않음)
+  const secs = async () => { const m = /실행 중 · (\d+):(\d\d)/.exec(await actRow.locator('.astate').innerText()); return m ? Number(m[1]) * 60 + Number(m[2]) : -1; };
+  const seen = [await secs()];
+  for (let t = Date.now(); Date.now() - t < 5000 && !(seen[seen.length - 1] >= seen[0] + 2 && seen.some((v, i) => i > 0 && v - seen[i - 1] === 1));) {
+    await page.waitForTimeout(100);
+    const v = await secs();
+    if (v !== seen[seen.length - 1]) seen.push(v);
+  }
+  assert.ok(seen[0] >= 0 && seen[seen.length - 1] >= seen[0] + 2, `왼쪽 작동 중 경과가 안 오른다: ${seen.join(' → ')}`);
+  assert.ok(seen.some((v, i) => i > 0 && v - seen[i - 1] === 1), `왼쪽 작동 중 경과가 1초씩 안 오른다: ${seen.join(' → ')}`);
+  assert.equal(await kitRun.getAttribute('data-state'), 'running', '경과를 보는 동안 워커가 끝났다(대본 지연이 짧다)');
   await page.getByTestId('assistant-text').filter({ hasText: '워커가 끝났다' }).waitFor(T);
   await status().filter({ hasText: '끝남' }).waitFor(T);
   await actRow.waitFor({ state: 'detached', ...T });
   assert.equal(await kitRun.getAttribute('data-state'), 'done');
   assert.equal(await kitRun.getByTestId('model-chip').innerText(), 'haiku', '끝난 뒤 워커 표 칩이 사라졌다');
   await noHScroll('kit 워커 표');
-  pass('(g) kit 워커 jh-kit:w-implement-lite → 워커 표 모델 칩 haiku, 도는 동안 왼쪽 작동 중 줄(같은 칩), 턴 끝나면 작동 중에서 사라짐');
+  pass('(g) kit 워커 jh-kit:w-implement-lite → 워커 표 모델 칩 haiku, 도는 동안 왼쪽 작동 중 줄(같은 칩, 경과 1초씩 오름), 턴 끝나면 작동 중에서 사라짐');
 
   // ── (4) 지난 세션 → 이어하기 → 지난 기록 ──
   const transcript = await (await fetch(`${base}/api/projects/${proj.id}/sessions/${PAST}/transcript`)).json();
