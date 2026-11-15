@@ -1,6 +1,7 @@
 // 공개 레포: 진짜 claude 녹화·세션 기록 fixture 에 개인 정보가 들어가지 않았는지 검사한다.
-// 실명은 여기에 적을 수 없어서(이 파일도 공개) 두 가지로 막는다:
-//   1) 홈 경로 자체를 막는다 — Windows `X:\Users\…`, macOS `/Users/…`, `/root/`, `/home/<hong 아님>`. 실명은 보통 홈 경로로 새어 든다
+// 실명을 작성자·크레딧으로 쓰는 것은 괜찮다(재혁 결정 2026-11-15). 막는 것은 계정에 닿는 정보다:
+//   1) 홈 경로 자체를 막는다 — Windows `X:\Users\…`, macOS `/Users/…`, `/root/`, `/home/<hong 아님>`
+//   1-1) 계정·조직 UUID — `organizationUuid`·`accountUuid` 같은 칸의 0 아닌 UUID, 플러그인 경로 `synced/<uuid>_<uuid>`
 //   2) PLENUM_PRIVATE_WORDS(쉼표로 구분, 노트북·CI 비밀 변수)에 적은 낱말이 있으면 실패
 // 이메일은 example.invalid·GitHub noreply·noreply@anthropic.com 만 허용한다.
 import fs from 'node:fs';
@@ -49,9 +50,24 @@ test('fixture 에 실제 홈 경로(C:\\Users\\ 등)가 없다', () => {
   expect(bad).toEqual([]);
 });
 
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const ACCOUNT_FIELD = new RegExp(`"(organization|account|user|org)_?[Uu]uid"\\s*:\\s*"(${UUID})"`, 'gi');
+const SYNCED_PATH = new RegExp(`synced[\\\\/]+${UUID}_${UUID}`, 'i');
+const isZero = (u: string) => /^[0-]+[0-9]?$/.test(u.replace(/-4000-8000-/, '-0000-0000-')); // 치환에 쓴 00000000-0000-4000-8000-00000000000x
+
+test('fixture 에 계정·조직 UUID 가 없다 (치환한 0 UUID 만 허용)', () => {
+  const bad: string[] = [];
+  for (const f of all) {
+    const t = fs.readFileSync(f, 'utf8');
+    for (const m of t.matchAll(ACCOUNT_FIELD)) if (!isZero(m[2])) bad.push(`${rel(f)}: ${m[0].slice(0, 60)}`);
+    if (SYNCED_PATH.test(t)) bad.push(`${rel(f)}: 플러그인 경로에 조직·계정 UUID`);
+  }
+  expect(bad).toEqual([]);
+});
+
 // 비밀이 비어 있으면(포크 PR, 비밀 없는 로컬) 이 검사만 건너뛴다 — 이메일·경로 검사는 위에서 그대로 돈다
 const words = (process.env.PLENUM_PRIVATE_WORDS || '').split(',').map((w) => w.trim()).filter(Boolean);
-test.skipIf(words.length === 0)('PLENUM_PRIVATE_WORDS 에 적은 낱말(실명 등)이 없다', () => {
+test.skipIf(words.length === 0)('PLENUM_PRIVATE_WORDS 에 적은 낱말(이메일 아이디 등)이 없다', () => {
   const bad: string[] = [];
   for (const f of all) { const t = fs.readFileSync(f, 'utf8'); for (const w of words) if (t.includes(w)) bad.push(`${rel(f)}: 비공개 낱말 #${words.indexOf(w) + 1}`); }
   expect(bad).toEqual([]);
@@ -66,4 +82,9 @@ test('검사 규칙이 실제로 잡는다 (규칙이 아무것도 못 잡으면
   expect(HOME_PATHS[1][1].test('/Users/someone/x')).toBe(true);
   expect(HOME_PATHS[3][1].test('/home/someone/x')).toBe(true);
   expect(HOME_PATHS[3][1].test('/home/hong/.claude')).toBe(false);
+  const fakeOrg = '"organizationUuid":"12345678-9abc-4def-8123-456789abcdef"';
+  expect([...fakeOrg.matchAll(ACCOUNT_FIELD)].map((m) => isZero(m[2]))).toEqual([false]);
+  expect([...'"accountUuid":"00000000-0000-4000-8000-000000000001"'.matchAll(ACCOUNT_FIELD)].map((m) => isZero(m[2]))).toEqual([true]);
+  expect(SYNCED_PATH.test('/home/hong/.claude/plugins/synced/12345678-9abc-4def-8123-456789abcdef_12345678-9abc-4def-8123-456789abcdef/jh-kit')).toBe(true);
+  expect(SYNCED_PATH.test('/home/hong/.claude/plugins/synced/ORG_ACCOUNT/jh-kit')).toBe(false);
 });
