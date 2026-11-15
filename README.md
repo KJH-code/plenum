@@ -73,7 +73,7 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
   - 도구 호출은 "도구 N번 · 이름들" 한 줄로 접고, Agent 호출은 턴마다 워커 표. 마크다운은 직접 렌더(HTML 이스케이프, http·https 링크만)
   - 처리 못 하는 요청은 "터미널로 열기" 안내 카드. `system/init`의 `claude_code_version`이 2.1.248보다 낮으면 경고
   - 새로고침·재연결해도 서버가 들고 있던 이벤트를 다시 받아 답 안 한 카드가 다시 뜬다. 같은 프로젝트에서 응답 중인 세션이 있으면 경고(막지 않음)
-- 지난 세션: `~/.claude/projects`의 기록을 줄 안 `cwd`로 프로젝트와 대조(폴더 이름은 한글이 `-`로 바뀌어 겹친다). 제목은 AI 제목 우선, 없으면 첫 질문. 명령만 친 세션은 숨김. 이어하기(`--resume`)는 지난 기록을 다시 그린다
+- 지난 세션: `~/.claude/projects`의 기록을 줄 안 `cwd`로 프로젝트와 대조(폴더 이름은 한글이 `-`로 바뀌어 겹친다). 제목은 AI 제목(기록 줄 `{"type":"ai-title","aiTitle":…}`) 우선, 없으면 첫 질문. AI 제목은 터미널 세션에만 생기고 `-p` 채팅 세션에는 생기지 않아서(2.1.248 노트북 확인) 채팅으로 시작한 세션은 첫 질문이 제목이다. 명령만 친 세션은 숨김. 이어하기(`--resume`)는 지난 기록을 다시 그린다
 - 터미널로 열기: 채팅 프로세스를 먼저 끝내고(interrupt → stdin 닫기 → 시간 넘으면 트리째) Windows Terminal(없으면 cmd `start`)의 PowerShell에서 `claude --resume <ID>`. 처음 여는 폴더는 trust 창 안내. 터미널에서 열려 있는 세션은 채팅 이어하기를 막는다
 - 작동 중: 채팅 세션은 stream(`system/task_*`), 터미널 세션은 jh-kit 2.2.0 알림 훅(`POST /api/hook`, 설정 폴더 `server.json`의 포트). 워커는 id로 짝, 턴 끝에 끝난 워커를 지우고 백그라운드 워커는 결과까지 남긴다. 12시간 소식 없는 터미널 세션은 빠진다
 - 한도: `rate_limit_event.rate_limit_info.unifiedWindows`의 5시간·주간 %를 상단에 "HH:MM 기준"과 함께(값 없으면 "—", 마지막 값은 설정 폴더 `limits.json`). 한도 rejected면 보내기를 막고 리셋 시각
