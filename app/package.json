@@ -1,6 +1,6 @@
 {
   "name": "plenum-app",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,12 +10,12 @@
     "postinstall": "npm ci --prefix .. --no-audit --no-fund",
     "dev": "vite",
     "build": "vite build",
-    "serve": "tsx server/main.ts",
-    "start": "vite build && tsx server/main.ts",
+    "serve": "node --import tsx server/main.ts",
+    "start": "vite build && node --import tsx server/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "screens": "vite build && tsx e2e/screens.ts",
-    "e2e": "vite build && tsx e2e/flows.ts"
+    "e2e": "vite build && tsx e2e/flows.ts && tsx e2e/chat.ts"
   },
   "dependencies": {
     "react": "18.3.1",

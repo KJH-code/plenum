@@ -11,12 +11,14 @@ const child = spawn(process.execPath, [tsx, 'server/main.ts'], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let out = '';
+let checked = false; // 주소 줄을 본 뒤 한 번만 검사 (서버가 끌 때 찍는 줄에 다시 반응하면 죽은 서버를 부른다)
 const fail = (m) => { console.error(`smoke 실패: ${m}\n${out}`); child.kill(); process.exit(1); };
 const timer = setTimeout(() => fail('서버가 30초 안에 안 떴다'), 30000);
 child.stdout.on('data', async (d) => {
   out += d;
   const m = /Plenum: (http:\/\/127\.0\.0\.1:\d+)/.exec(out);
-  if (!m) return;
+  if (!m || checked) return;
+  checked = true;
   clearTimeout(timer);
   try {
     const s = await fetch(`${m[1]}/api/settings`);

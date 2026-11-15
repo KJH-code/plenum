@@ -1,12 +1,12 @@
 // 로컬 HTTP 서버. 127.0.0.1에만 묶는다.
 // 다른 사이트가 브라우저를 통해 이 서버를 부르지 못하게: Host가 127.0.0.1/localhost가 아니면 거부(DNS rebinding),
 // 바꾸는 요청(POST·PUT·DELETE)은 X-Plenum 헤더가 있어야 한다(사용자 정의 헤더는 CORS preflight가 필요한데 응답하지 않는다).
-// GET 이어도 부작용이 있는 것(/api/kit/remote 는 git fetch)은 같은 헤더가 있어야 한다.
+// GET 이어도 부작용이 있는 것(/api/kit/remote 는 git fetch, /api/claude/capabilities 는 claude --version 실행)은 같은 헤더가 있어야 한다.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { configDir, loadConfig, saveConfig } from './config.ts';
+import { configDir, loadConfig, saveConfig, type Config } from './config.ts';
 import { detect } from './git.ts';
 import { readKit } from './kit.ts';
 import { getInstall, startInstall } from './install.ts';
@@ -16,12 +16,38 @@ import { cancelSave, getSave, isSaving, retrySave, startSave } from './kitsave.t
 import { folderCommand, editorCommand, launch, type Launcher } from './open.ts';
 import { addGitHub, addLocal, cloneTarget, findProject, listProjects, readClaudeMd, removeProject, UserError } from './projects.ts';
 import { compareVersions } from './versions.ts';
+import { handleHistory } from './historyRoutes.ts';
 import { absolutePath, checkCloneDir, checkKitRepo } from './paths.ts';
+import { createActivity } from './activity.ts';
+import { handleActivity } from './activityRoutes.ts';
+import type { ChatRegistry } from './chatTypes.ts';
+import { createChatManager, type ChatDeps, type ChatManager } from './chat.ts';
+import { handleChat } from './chatRoutes.ts';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.json': 'application/json', '.woff2': 'font/woff2', '.png': 'image/png' };
 
-export interface ServerOptions { cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher }
+export interface ServerOptions {
+  cfgDir?: string; env?: NodeJS.ProcessEnv; launcher?: Launcher;
+  claudeHome?: string;                                         // 세션 기록 폴더(없으면 CLAUDE_CONFIG_DIR 또는 ~/.claude)
+  runningOf?(sessionId: string): 'chat' | 'terminal' | null;   // 지난 세션 목록의 running
+  workerModel?: (agentType: string) => string | null;  // 훅 agent_type → 모델. 없으면 kit 레포 워커 정의에서 읽는다
+  chats?: ChatManager;                 // 채팅 매니저(main.ts 가 만들어 넣어 종료 때 정리). 없으면 여기서 만든다
+  chatDeps?: Partial<ChatDeps>;        // chats 를 여기서 만들 때 쓸 연결(테스트·다른 단위)
+}
+
+// 3단계 라우트 모듈이 받는 것. 각 모듈은 `async function handleXxx(ctx: RouteCtx): Promise<boolean>`(처리했으면 true)
+export interface RouteCtx {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  method: string;
+  parts: string[];            // /api/ 뒤 경로 조각(디코딩됨)
+  cfg: Config;
+  cfgDir: string;
+  env: NodeJS.ProcessEnv;
+  body(): Promise<any>;       // JSON 본문(1MB 제한)
+  send(status: number, body: unknown): void;
+}
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
   const text = JSON.stringify(body);
@@ -61,14 +87,40 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse) {
   fs.createReadStream(file).pipe(res);
 }
 
+// 채팅 워커 이벤트에 붙일 모델: kit 레포 워커 정의(subagent_type 의 "플러그인:" 앞머리는 뗀다)
+export function workerModel(cfgDir: string, subagentType: string): string | null {
+  try {
+    const k = readKit(loadConfig(cfgDir).kitRepoPath);
+    if (!k.ok) return null;
+    const name = subagentType.replace(/^[^:]+:/, '');
+    return k.workers.find((w) => w.name === name)?.model ?? null;
+  } catch { return null; }
+}
+
 export function createHandler(opts: ServerOptions = {}) {
   const cfgDir = opts.cfgDir ?? configDir(opts.env);
   const env = opts.env ?? process.env;
   const launcher = opts.launcher ?? launch;
+  // 모듈 연결: 채팅 ↔ 작동 중(터미널에서 열린 세션은 채팅 이어하기를 막고, 채팅 세션 훅은 작동 중이 무시) ↔ 지난 세션(running)
+  const kitModel = opts.workerModel ?? ((t: string) => workerModel(cfgDir, t));
+  let activityRef: ReturnType<typeof createActivity> | null = null;
+  const chats = opts.chats ?? createChatManager({ cfgDir, env, deps: { workerModel: kitModel, terminalAlive: (sid) => activityRef?.terminalAlive(sid) ?? false, ...opts.chatDeps } });
+  const activity = createActivity({ cfgDir, chats, workerModel: kitModel });
+  activityRef = activity;
+  // 작동 중 칸은 채팅을 프로젝트 경로로 묶는다 — 채팅 init 때 그 채팅의 프로젝트 경로를 알려 준다
+  chats.onEvent((chat, ev) => {
+    if (ev.type !== 'init') return;
+    try { activity.registerChatProject(chat.chatId, findProject(loadConfig(cfgDir), chat.projectId).path); } catch { /* 지워진 프로젝트 */ }
+  });
+  // 끝난 채팅은 실행 중이 아니다(findBySession 이 이미 거르지만 다른 registry 를 넣어도 같게)
+  const runningOf = opts.runningOf ?? ((sid: string) => {
+    const c = chats.findBySession(sid);
+    return c && c.state !== 'ended' ? 'chat' as const : activity.terminalAlive(sid) ? 'terminal' as const : null;
+  });
 
   async function api(req: http.IncomingMessage, res: http.ServerResponse, parts: string[]) {
     const method = req.method || 'GET';
-    const needsHeader = method !== 'GET' || (parts[0] === 'kit' && parts[1] === 'remote');
+    const needsHeader = method !== 'GET' || (parts[0] === 'kit' && parts[1] === 'remote') || (parts[0] === 'claude' && parts[1] === 'capabilities');
     if (needsHeader && req.headers['x-plenum'] !== '1') throw new UserError(403, 'X-Plenum 헤더가 없는 요청');
     const cfg = loadConfig(cfgDir);
     const [a, b, c] = parts;
@@ -177,10 +229,16 @@ export function createHandler(opts: ServerOptions = {}) {
         return send(res, 200, { ok: true });
       }
     }
+    // ── 3단계 라우트 (단위마다 한 줄: if (await handleXxx(ctx)) return;) ──
+    const ctx: RouteCtx = { req, res, method, parts, cfg, cfgDir, env, body: () => readBody(req), send: (status, body) => send(res, status, body) };
+    if (await handleHistory(ctx, { claudeHome: opts.claudeHome, runningOf })) return;
+    if (await handleActivity(ctx, { activity, chats, launcher })) return;
+    if (await handleChat(ctx, chats)) return;
+    // ── 3단계 라우트 끝 ──
     throw new UserError(404, `없는 API: ${method} /api/${parts.join('/')}`);
   }
 
-  return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+  const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       if (!hostAllowed(req.headers.host)) throw new UserError(403, 'Host가 127.0.0.1·localhost가 아니다');
       const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -191,10 +249,12 @@ export function createHandler(opts: ServerOptions = {}) {
       else throw new UserError(405, '허용하지 않는 메서드');
     } catch (e: any) {
       if (res.headersSent) { res.end(); return; }
-      if (e instanceof UserError) send(res, e.status, { error: e.message });
+      if (e instanceof UserError) send(res, e.status, { error: e.message, ...(e.reason ? { reason: e.reason, ...e.extra } : {}) });
       else send(res, 500, { error: `서버 오류: ${e && e.message ? e.message : String(e)}` });
     }
   };
+  // main.ts 가 끌 때 채팅을 정리하려고 매니저를 꺼내 쓴다
+  return Object.assign(handler, { chats, activity });
 }
 
 // 4317부터 빈 포트를 찾는다 (최대 20칸).
