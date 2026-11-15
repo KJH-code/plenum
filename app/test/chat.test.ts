@@ -5,8 +5,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { chatArgs, chatEnv, createChatManager, LIMIT_UNKNOWN_RESET, type ChatManager } from '../server/chat.ts';
-import type { Card, ChatEvent } from '../server/chatTypes.ts';
+import { chatArgs, chatEnv, pluginCacheRule, createChatManager, LIMIT_UNKNOWN_RESET, type ChatManager } from '../server/chat.ts';
+import type { Card, CardReply, ChatEvent } from '../server/chatTypes.ts';
 import { readLimits, readSessions, saveLimits } from '../server/store.ts';
 import { makeFakeStreamClaude, writeScript, type FakeStreamClaude } from './fakeclaudeStream.ts';
 import { workerModel } from '../server/app.ts';
@@ -114,7 +114,7 @@ describe('녹화 재생', () => {
     expect(ss.updatedPermissions).toEqual([{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch c.txt' }], behavior: 'allow', destination: 'session' }]);
     expect(JSON.stringify(ss)).not.toMatch(/setMode|addDirectories/);
     // "사용자가" 를 밝힌다(그냥 이유만 주면 Claude 가 훅이 막은 것으로 이해했다)
-    expect(resp(pc3.requestId).response).toEqual({ behavior: 'deny', message: '사용자가 거부함. 이유: 삭제는 내가 직접 할게' });
+    expect(resp(pc3.requestId).response).toEqual({ behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 삭제는 내가 직접 할게' });
 
     // 한도: pct 4·28, limits.json
     const lim = events(m, id).filter((e) => e.type === 'limits');
@@ -232,6 +232,42 @@ describe('녹화 재생', () => {
     expect(m.get(id)!.state).toBe('ended');
     expect(s.fake.stdin().some((x) => x.type === 'control_request' && x.request.subtype === 'interrupt')).toBe(true);
     await expect(Promise.resolve().then(() => m.send(id, '또'))).rejects.toMatchObject({ status: 409 });
+  });
+
+  // 거부 이유 → stdin deny message, 경로 전체: 매니저 직접 / HTTP(POST /api/chats/:id/respond, 본문 JSON 그대로)
+  it.each(['매니저', 'HTTP'])('01 녹화 거부 이유 "지우지마" → 가짜 claude stdin message 에 그대로 (%s)', async (via) => {
+    const s = setup();
+    const env = s.fake.env({ script: rec('01-cards.jsonl') });
+    const m = manager(s, env);
+    const srv = via === 'HTTP' ? await inProcess({ cfgDir: s.cfgDir, env, chats: m }) : null;
+    try {
+      let id: string;
+      let respond: (r: CardReply) => Promise<void>;
+      if (srv) {
+        const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+        id = (await srv.call('POST', `/api/projects/${pid}/chats`, { text: '시작' })).body.chat.chatId;
+        respond = async (r) => { const res = await srv.call('POST', `/api/chats/${id}/respond`, r); expect(res.status).toBe(200); };
+      } else {
+        id = (await m.start(s.project, { text: '시작' })).chat.chatId;
+        respond = async (r) => { m.respond(id, r); };
+      }
+      const q = await nextCard(m, id, 0);
+      await respond({ requestId: q.card.requestId, action: 'answer', answers: { 'Which file name?': 'a.txt (Recommended)' } });
+      const p1 = await nextCard(m, id, q.seq);
+      await respond({ requestId: p1.card.requestId, action: 'allow' });
+      const p2 = await nextCard(m, id, p1.seq);
+      await respond({ requestId: p2.card.requestId, action: 'allow-session' });
+      const p3 = await nextCard(m, id, p2.seq);
+      expect(((p3.card as any).input).command).toBe('rm a.txt');
+      await respond({ requestId: p3.card.requestId, action: 'deny', reason: '지우지마' });
+      const done = await waitEvent(m, id, 'card-resolved', (e) => e.requestId === p3.card.requestId, p3.seq);
+      expect(done).toMatchObject({ outcome: 'deny', detail: '지우지마' });
+      await waitEvent(m, id, 'result');
+      const sent = s.fake.stdin().find((x) => x.type === 'control_response' && x.response.request_id === p3.card.requestId);
+      expect(sent.response.response).toEqual({ behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 지우지마' });
+    } finally {
+      await srv?.close();
+    }
   });
 });
 
@@ -450,10 +486,10 @@ describe('합성 대본', () => {
 
   // 거부 이유 → stdin 의 deny message (정확 일치)
   it.each([
-    { reason: undefined, message: '사용자가 거부함' },
-    { reason: '', message: '사용자가 거부함' },
-    { reason: '   ', message: '사용자가 거부함' },
-    { reason: ' 지우지 마 ', message: '사용자가 거부함. 이유: 지우지 마' },
+    { reason: undefined, message: '사용자가 직접 거부했다(훅 아님).' },
+    { reason: '', message: '사용자가 직접 거부했다(훅 아님).' },
+    { reason: '   ', message: '사용자가 직접 거부했다(훅 아님).' },
+    { reason: ' 지우지 마 ', message: '사용자가 직접 거부했다(훅 아님). 이유: 지우지 마' },
   ])('거부: 이유 $reason → message "$message"', async ({ reason, message }) => {
     const s = setup();
     const file = path.join(s.root, 'deny.jsonl');
@@ -469,27 +505,49 @@ describe('합성 대본', () => {
     expect(r).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: 'd-1', response: { behavior: 'deny', message } } });
   });
 
-  it('플러그인 캐시 Read 허용 규칙: 띄운 claude 인자에 있고, CLAUDE_CONFIG_DIR 이 있으면 없다', async () => {
-    const RULE = 'Read(~/.claude/plugins/cache/**)';
+  // 플러그인 캐시 규칙: Claude Code 절대 경로 규칙 모양(// + 드라이브 소문자 + / 구분자). 노트북 2.1.248 카드가 제안한 모양 기준
+  it.each([
+    { name: 'win32 홈(한글)', platform: 'win32', home: 'C:\\Users\\홍길동', cfg: undefined, rule: 'Read(//c/Users/홍길동/.claude/plugins/cache/**)' },
+    { name: 'win32 홈(한글·공백, 끝 구분자)', platform: 'win32', home: 'D:\\Users\\홍 길동\\', cfg: undefined, rule: 'Read(//d/Users/홍 길동/.claude/plugins/cache/**)' },
+    { name: 'win32 CLAUDE_CONFIG_DIR', platform: 'win32', home: 'C:\\Users\\홍길동', cfg: 'E:\\설정 폴더\\claude', rule: 'Read(//e/설정 폴더/claude/plugins/cache/**)' },
+    { name: 'win32 CLAUDE_CONFIG_DIR 끝 구분자·/ 섞임', platform: 'win32', home: 'C:\\Users\\홍길동', cfg: 'c:/설정\\claude\\', rule: 'Read(//c/설정/claude/plugins/cache/**)' },
+    { name: 'win32 UNC 홈', platform: 'win32', home: '\\\\server\\users\\홍길동', cfg: undefined, rule: null },
+    { name: 'win32 UNC CLAUDE_CONFIG_DIR', platform: 'win32', home: 'C:\\Users\\홍길동', cfg: '\\\\server\\share\\claude', rule: null },
+    { name: 'win32 상대 CLAUDE_CONFIG_DIR', platform: 'win32', home: 'C:\\Users\\홍길동', cfg: '설정', rule: null },
+    { name: 'POSIX 홈', platform: 'linux', home: '/home/홍길동', cfg: undefined, rule: 'Read(~/.claude/plugins/cache/**)' },
+    { name: 'POSIX CLAUDE_CONFIG_DIR', platform: 'linux', home: '/home/홍길동', cfg: '/opt/cfg', rule: 'Read(//opt/cfg/plugins/cache/**)' },
+    { name: 'POSIX CLAUDE_CONFIG_DIR(한글·공백, 끝 구분자)', platform: 'darwin', home: '/Users/홍길동', cfg: '/Users/홍길동/다른 설정/', rule: 'Read(//Users/홍길동/다른 설정/plugins/cache/**)' },
+    { name: 'POSIX 상대 CLAUDE_CONFIG_DIR', platform: 'linux', home: '/home/홍길동', cfg: 'cfg', rule: null },
+  ] as const)('pluginCacheRule: $name', ({ platform, home, cfg, rule }) => {
+    expect(pluginCacheRule(platform, home, cfg)).toBe(rule);
+  });
+
+  it('플러그인 캐시 Read 허용 규칙: 띄운 claude 인자에 플랫폼·CLAUDE_CONFIG_DIR 맞춰 붙는다', async () => {
     const pair = (args: string[]) => { const i = args.indexOf('--allowedTools'); return i < 0 ? null : args.slice(i, i + 2); };
     // 함수 모양
-    expect(pair(chatArgs({}))).toEqual(['--allowedTools', RULE]);
-    expect(pair(chatArgs({ model: 'haiku', resume: '11111111-2222-4333-8444-555555555555' }, { PATH: '/x' }))).toEqual(['--allowedTools', RULE]);
-    expect(pair(chatArgs({}, { CLAUDE_CONFIG_DIR: 'C:\\Users\\홍길동\\다른 설정' }))).toBeNull();
-    expect(pair(chatArgs({}, { CLAUDE_CONFIG_DIR: '' }))).toEqual(['--allowedTools', RULE]); // 빈 값은 없는 것과 같다
-    expect(chatArgs({}).filter((a) => a.startsWith('Read(') || /^(Edit|Write|Bash)\(/.test(a))).toEqual([RULE]); // Read 만
-    // 실제로 띄운 인자
+    const HOME_RULE = 'Read(~/.claude/plugins/cache/**)';
+    expect(pair(chatArgs({}, {}, 'linux', '/home/홍길동'))).toEqual(['--allowedTools', HOME_RULE]);
+    expect(pair(chatArgs({ model: 'haiku', resume: '11111111-2222-4333-8444-555555555555' }, { PATH: '/x' }, 'linux', '/home/홍길동'))).toEqual(['--allowedTools', HOME_RULE]);
+    expect(pair(chatArgs({}, {}, 'win32', 'C:\\Users\\홍길동'))).toEqual(['--allowedTools', 'Read(//c/Users/홍길동/.claude/plugins/cache/**)']);
+    expect(pair(chatArgs({}, { CLAUDE_CONFIG_DIR: 'C:\\Users\\홍길동\\다른 설정' }, 'win32', 'C:\\Users\\홍길동'))).toEqual(['--allowedTools', 'Read(//c/Users/홍길동/다른 설정/plugins/cache/**)']);
+    expect(pair(chatArgs({}, {}, 'win32', '\\\\server\\홍길동'))).toBeNull(); // UNC 는 붙이지 않는다
+    expect(pair(chatArgs({}, { CLAUDE_CONFIG_DIR: '' }, 'linux', '/home/홍길동'))).toEqual(['--allowedTools', HOME_RULE]); // 빈 값은 없는 것과 같다
+    expect(chatArgs({}, {}, 'win32', 'C:\\Users\\홍길동').filter((a) => a.startsWith('Read(') || /^(Edit|Write|Bash|PowerShell)\(/.test(a))).toHaveLength(1); // Read 만
+    // 실제로 띄운 인자 (이 기계의 플랫폼·홈)
     const s = setup();
     const file = path.join(s.root, 'args.jsonl');
     writeScript(file, [...HELLO, { dir: 'out', msg: INIT('2.1.323') }, { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
     const m1 = manager(s, s.fake.env({ script: file }));
     await waitEvent(m1, (await m1.start(s.project, { text: '하나' })).chat.chatId, 'result');
-    const m2 = manager(s, s.fake.env({ script: file, extra: { CLAUDE_CONFIG_DIR: path.join(s.root, '다른 설정') } }));
+    const other = path.join(s.root, '다른 설정');
+    const m2 = manager(s, s.fake.env({ script: file, extra: { CLAUDE_CONFIG_DIR: other } }));
     await waitEvent(m2, (await m2.start(s.project, { text: '둘' })).chat.chatId, 'result');
     const calls = s.fake.argsCalls();
     expect(calls).toHaveLength(2);
-    expect(pair(calls[0].args)).toEqual(['--allowedTools', RULE]);
-    expect(pair(calls[1].args)).toBeNull();
+    expect(pair(calls[0].args)).toEqual(['--allowedTools', pluginCacheRule(process.platform, os.homedir())]);
+    const r2 = pluginCacheRule(process.platform, os.homedir(), other);
+    expect(r2).toMatch(/^Read\(\/\/.*다른 설정\/plugins\/cache\/\*\*\)$/);
+    expect(pair(calls[1].args)).toEqual(['--allowedTools', r2]);
   });
 
   it('PATH 에 claude 가 없으면 400', async () => {

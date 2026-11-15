@@ -2,6 +2,7 @@
 // 질문·승인(can_use_tool)은 카드로 내보내고, 답은 control_response 로 stdin 에 돌려준다.
 // 줄 모양 근거: test/fixtures/stream/*.jsonl (진짜 claude 녹화). 모르는 줄은 무시한다(죽지 않기).
 import { spawn, type ChildProcess } from 'node:child_process';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -163,13 +164,35 @@ function sessionRulesFrom(suggestions: unknown): SessionRule[] {
 // claude 2.1.323 으로 확인: 이 규칙이 있으면 그 경로 Read 카드가 안 뜨고, 없으면 뜬다
 export const PLUGIN_CACHE_READ = 'Read(~/.claude/plugins/cache/**)';
 
+// 플러그인 캐시 폴더(<CLAUDE_CONFIG_DIR 또는 홈/.claude>/plugins/cache)의 Read 허용 규칙. 못 쓰면 null(카드로 묻는다 — 안전한 쪽).
+// Claude Code 절대 경로 규칙은 `//` + 경로. Windows 는 드라이브 소문자·`/` 구분자(노트북 2.1.248 카드가 제안한 모양: //c/Users/…).
+// POSIX 홈은 ~ 모양(2.1.323 확인). UNC·상대 경로는 규칙을 붙이지 않는다
+export function pluginCacheRule(platform: NodeJS.Platform, homedir: string, configDir?: string): string | null {
+  // 앞뒤 구분자·겹친 구분자를 걷은 경로 조각 + plugins/cache/**
+  const rule = (prefix: string, rest: string) => {
+    const r = rest.replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '');
+    return `Read(//${prefix}${r ? `${r}/` : ''}plugins/cache/**)`;
+  };
+  if (platform === 'win32') {
+    const base = configDir || `${homedir.replace(/[\\/]+$/, '')}\\.claude`;
+    const m = /^([A-Za-z]):[\\/](.*)$/.exec(base);
+    if (!m) return null; // UNC(\\server\…)·상대 경로·드라이브만(C:)
+    return rule(`${m[1].toLowerCase()}/`, m[2].replace(/\\/g, '/'));
+  }
+  if (!configDir) return PLUGIN_CACHE_READ;
+  if (!configDir.startsWith('/') || configDir.startsWith('//')) return null; // 상대 경로·// 로 시작하는 이상한 경로
+  return rule('', configDir);
+}
+// 거부 deny message 머리. "훅이 막았다"로 읽히지 않게(2.1.248 haiku) 사람이 거부했다고 못 박는다
+export const DENIED = '사용자가 직접 거부했다(훅 아님)';
+
 // claude 실행 인자 (테스트가 모양을 본다). env 는 CLAUDE_CONFIG_DIR 만 본다
-export function chatArgs(o: { model?: string; effort?: string; resume?: string }, env: NodeJS.ProcessEnv = {}): string[] {
+export function chatArgs(o: { model?: string; effort?: string; resume?: string }, env: NodeJS.ProcessEnv = {},
+  platform: NodeJS.Platform = process.platform, homedir: string = os.homedir()): string[] {
   // --permission-mode default: 사용자 설정의 defaultMode(acceptEdits 등)가 채팅에 새지 않게 명시한다
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio', '--permission-mode', 'default'];
-  // CLAUDE_CONFIG_DIR 이 있으면 플러그인 캐시가 ~/.claude 밖이다. 그 경로를 규칙으로 정확히 쓰는 법(드라이브 문자·한글·공백)을
-  // 확인 못 했으므로 규칙을 붙이지 않는다(카드로 묻는다 — 안전한 쪽)
-  if (!env.CLAUDE_CONFIG_DIR) args.push('--allowedTools', PLUGIN_CACHE_READ);
+  const rule = pluginCacheRule(platform, homedir, env.CLAUDE_CONFIG_DIR || undefined);
+  if (rule) args.push('--allowedTools', rule);
   if (o.model) args.push('--model', o.model);
   if (o.effort) args.push('--effort', o.effort);
   if (o.resume) args.push('--resume', o.resume);
@@ -452,7 +475,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     const resolved = resolveCommand('claude', env, platform);
     if (!resolved) throw new UserError(400, 'claude 를 PATH 에서 못 찾았다 — Claude Code 를 설치하고 Plenum 을 다시 시작');
     let cmd;
-    try { cmd = commandFor(resolved, chatArgs({ model, effort, resume }, env), platform); } catch (e: any) { throw new UserError(400, e.message); }
+    try { cmd = commandFor(resolved, chatArgs({ model, effort, resume }, env, platform), platform); } catch (e: any) { throw new UserError(400, e.message); }
     const child = spawn(cmd.cmd, cmd.args, {
       cwd: project.path, env: chatEnv(env), stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true, windowsVerbatimArguments: !!cmd.verbatim, detached: platform !== 'win32',
@@ -536,7 +559,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       case 'deny': {
         const reason = typeof reply.reason === 'string' ? reply.reason.trim() : '';
         // "사용자가" 를 밝힌다 — 그냥 message 만 주면 Claude 가 훅이 막은 것으로 이해했다(노트북 2.1.248)
-        response = { behavior: 'deny', message: reason ? `사용자가 거부함. 이유: ${reason}` : '사용자가 거부함' };
+        response = { behavior: 'deny', message: reason ? `${DENIED}. 이유: ${reason}` : `${DENIED}.` };
         outcome = 'deny';
         detail = reason || undefined;
         break;
