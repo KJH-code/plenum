@@ -43,6 +43,15 @@ export function cardScript(file: string, sid: string) {
     { dir: 'out', msg: TEXT('msg_card', '카드 답을 받았다') }, { dir: 'out', msg: RESULT('카드 답을 받았다') }, { dir: 'exit', code: 0 }]);
 }
 
+// PowerShell 승인 카드 하나(거부 Enter 흐름용). request_id deny-enter-1
+export const DENY_ENTER_ID = 'deny-enter-1';
+export function denyEnterScript(file: string, sid: string) {
+  writeScript(file, [...HELLO, { dir: 'out', msg: INIT(sid) },
+    { dir: 'out', msg: { type: 'control_request', request_id: DENY_ENTER_ID, request: { subtype: 'can_use_tool', tool_name: 'PowerShell', input: { command: 'Remove-Item 메모.txt', description: '메모 지우기' }, permission_suggestions: [] } } },
+    { dir: 'in', msg: { type: 'control_response', response: { request_id: DENY_ENTER_ID } } },
+    { dir: 'out', msg: TEXT('msg_deny_enter', '거부를 받았다') }, { dir: 'out', msg: RESULT('거부를 받았다') }, { dir: 'exit', code: 0 }]);
+}
+
 // kit 워커 하나(subagent_type jh-kit:w-implement-lite)를 전경으로 돌린다. 줄 모양은 녹화 04 와 같고 이름만 kit 워커.
 // 워커가 runMs 동안 실행 중(작동 중 2초 폴링이 잡게) → 끝 → 턴 끝
 export const KIT_WORKER = 'jh-kit:w-implement-lite';

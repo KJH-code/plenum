@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { chatArgs, chatEnv, pluginCacheRule, createChatManager, LIMIT_UNKNOWN_RESET, type ChatManager } from '../server/chat.ts';
-import type { Card, ChatEvent } from '../server/chatTypes.ts';
+import type { Card, CardReply, ChatEvent } from '../server/chatTypes.ts';
 import { readLimits, readSessions, saveLimits } from '../server/store.ts';
 import { makeFakeStreamClaude, writeScript, type FakeStreamClaude } from './fakeclaudeStream.ts';
 import { workerModel } from '../server/app.ts';
@@ -232,6 +232,42 @@ describe('녹화 재생', () => {
     expect(m.get(id)!.state).toBe('ended');
     expect(s.fake.stdin().some((x) => x.type === 'control_request' && x.request.subtype === 'interrupt')).toBe(true);
     await expect(Promise.resolve().then(() => m.send(id, '또'))).rejects.toMatchObject({ status: 409 });
+  });
+
+  // 거부 이유 → stdin deny message, 경로 전체: 매니저 직접 / HTTP(POST /api/chats/:id/respond, 본문 JSON 그대로)
+  it.each(['매니저', 'HTTP'])('01 녹화 거부 이유 "지우지마" → 가짜 claude stdin message 에 그대로 (%s)', async (via) => {
+    const s = setup();
+    const env = s.fake.env({ script: rec('01-cards.jsonl') });
+    const m = manager(s, env);
+    const srv = via === 'HTTP' ? await inProcess({ cfgDir: s.cfgDir, env, chats: m }) : null;
+    try {
+      let id: string;
+      let respond: (r: CardReply) => Promise<void>;
+      if (srv) {
+        const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
+        id = (await srv.call('POST', `/api/projects/${pid}/chats`, { text: '시작' })).body.chat.chatId;
+        respond = async (r) => { const res = await srv.call('POST', `/api/chats/${id}/respond`, r); expect(res.status).toBe(200); };
+      } else {
+        id = (await m.start(s.project, { text: '시작' })).chat.chatId;
+        respond = async (r) => { m.respond(id, r); };
+      }
+      const q = await nextCard(m, id, 0);
+      await respond({ requestId: q.card.requestId, action: 'answer', answers: { 'Which file name?': 'a.txt (Recommended)' } });
+      const p1 = await nextCard(m, id, q.seq);
+      await respond({ requestId: p1.card.requestId, action: 'allow' });
+      const p2 = await nextCard(m, id, p1.seq);
+      await respond({ requestId: p2.card.requestId, action: 'allow-session' });
+      const p3 = await nextCard(m, id, p2.seq);
+      expect(((p3.card as any).input).command).toBe('rm a.txt');
+      await respond({ requestId: p3.card.requestId, action: 'deny', reason: '지우지마' });
+      const done = await waitEvent(m, id, 'card-resolved', (e) => e.requestId === p3.card.requestId, p3.seq);
+      expect(done).toMatchObject({ outcome: 'deny', detail: '지우지마' });
+      await waitEvent(m, id, 'result');
+      const sent = s.fake.stdin().find((x) => x.type === 'control_response' && x.response.request_id === p3.card.requestId);
+      expect(sent.response.response).toEqual({ behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 지우지마' });
+    } finally {
+      await srv?.close();
+    }
   });
 });
 

@@ -10,7 +10,7 @@ import { chromium, type Page } from 'playwright';
 import { createHandler, listen } from '../server/app.ts';
 import type { Command } from '../server/open.ts';
 import { makeFakeStreamClaude } from '../test/fakeclaudeStream.ts';
-import { cardScript, copyHistory, KIT_WORKER, kitWorkerScript, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
+import { cardScript, copyHistory, DENY_ENTER_ID, denyEnterScript, KIT_WORKER, kitWorkerScript, limitScript, REC, replyScript, twoTurnScript } from './chatfix.ts';
 
 const SERVER_DOWN = 'Plenum 서버가 꺼져 있음 — 터미널에서 다시 켜기';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 채팅-'));
@@ -91,10 +91,12 @@ try {
   await sess.click();
   await perm('touch c.txt').getByTestId('card-result').filter({ hasText: '허용 · 이 세션 동안 다시 묻지 않음' }).waitFor(T);
   await perm('rm a.txt').getByRole('button', { name: '거부…' }).click(T);
-  await page.getByLabel('거부 이유').fill('삭제는 내가 직접 할게');
+  // 이유는 한 글자씩 타이핑(fill 아님) → "거부 보내기" 클릭
+  await page.getByLabel('거부 이유').pressSequentially('지우지마', { delay: 40 });
   await noHScroll('승인 카드(거부 이유)');
   await perm('rm a.txt').getByRole('button', { name: '거부 보내기' }).click();
-  await perm('rm a.txt').getByTestId('card-result').filter({ hasText: '거부함 · "삭제는 내가 직접 할게"를 Claude에게 전달' }).waitFor(T);
+  await perm('rm a.txt').getByTestId('card-result').filter({ hasText: '거부함 · "지우지마"를 Claude에게 전달' }).waitFor(T);
+  const shownReason = /"(.*)"를 Claude에게 전달/.exec(await perm('rm a.txt').getByTestId('card-result').innerText())?.[1];
   await page.getByTestId('assistant-text').filter({ hasText: 'Not done: step 5 failed' }).waitFor(T);
   await status().filter({ hasText: '끝남' }).waitFor(T);
   const r = responses();
@@ -103,7 +105,8 @@ try {
   assert.equal(r[0].response.behavior, 'allow');
   assert.deepEqual(r[1].response, { behavior: 'allow', updatedInput: { command: 'touch a.txt', description: 'Create a.txt' } });
   assert.deepEqual(r[2].response.updatedPermissions, [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'touch c.txt' }], behavior: 'allow', destination: 'session' }]);
-  assert.deepEqual(r[3].response, { behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 삭제는 내가 직접 할게' });
+  assert.deepEqual(r[3].response, { behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 지우지마' });
+  assert.equal(r[3].response.message.split('이유: ')[1], shownReason, '카드 결과 줄의 이유와 message 의 이유가 다르다');
   const tools = page.getByTestId('tools');
   assert.ok(await tools.count() >= 1);
   assert.match(await tools.first().locator('summary').innerText(), /^도구 \d+번 · /);
@@ -113,7 +116,7 @@ try {
   assert.ok(await last.locator('strong').count() > 0 && await last.locator('code').count() > 0, '마크다운이 그려지지 않았다');
   assert.match(await page.getByTestId('limit-5시간').innerText(), /\d+%/);
   await noHScroll('끝남');
-  pass('(1) 01 녹화: 질문 a.txt → 허용 → 이 세션 동안 `touch c.txt` 허용 → 거부+이유 → 끝 메시지, stdin 응답 4개 모양 맞음, 도구 접힘, 한도 표시');
+  pass('(1) 01 녹화: 질문 a.txt → 허용 → 이 세션 동안 `touch c.txt` 허용 → 거부+이유(타이핑·클릭) → 끝 메시지, stdin 응답 4개 모양 맞음, 도구 접힘, 한도 표시');
 
   // ── (2) 03 녹화: 모드 질문 → 모드 없음 → 헤더 ──
   env.FAKE_STREAM_SCRIPT = REC('03-mode.jsonl');
@@ -177,6 +180,29 @@ try {
   assert.equal(await kitRun.getByTestId('model-chip').innerText(), 'haiku', '끝난 뒤 워커 표 칩이 사라졌다');
   await noHScroll('kit 워커 표');
   pass('(g) kit 워커 jh-kit:w-implement-lite → 워커 표 모델 칩 haiku, 도는 동안 왼쪽 작동 중 줄(같은 칩, 경과 1초씩 오름), 턴 끝나면 작동 중에서 사라짐');
+
+  // ── (h) PowerShell 카드: 명령 코드 블록, 거부 이유 타이핑 → Enter 로 보내기 → stdin message 에 이유 ──
+  const hScript = path.join(root, 'deny-enter.jsonl');
+  denyEnterScript(hScript, '99999999-1111-4222-8333-444444444444');
+  env.FAKE_STREAM_SCRIPT = hScript;
+  await page.getByRole('button', { name: '새 세션' }).click();
+  await sendText('메모 지워');
+  const ps = page.getByTestId('permission-card').filter({ hasText: 'Remove-Item 메모.txt' });
+  await ps.waitFor(T);
+  assert.equal(await ps.locator('code.cmd').innerText(), 'Remove-Item 메모.txt');
+  assert.match(await ps.locator('.card-title').innerText(), /명령을 실행해도 될까\?/);
+  assert.ok(!(await ps.innerText()).includes('"command"'), 'PowerShell 카드에 입력 JSON 이 보인다');
+  await ps.getByRole('button', { name: '거부…' }).click();
+  const why = ps.getByLabel('거부 이유');
+  await why.pressSequentially('메모는 남겨 둬', { delay: 40 });
+  await why.press('Enter');
+  await ps.getByTestId('card-result').filter({ hasText: '거부함 · "메모는 남겨 둬"를 Claude에게 전달' }).waitFor(T);
+  await page.getByTestId('assistant-text').filter({ hasText: '거부를 받았다' }).waitFor(T);
+  const hShown = /"(.*)"를 Claude에게 전달/.exec(await ps.getByTestId('card-result').innerText())?.[1];
+  const hResp = fake.stdin().find((x) => x.type === 'control_response' && x.response.request_id === DENY_ENTER_ID)?.response.response;
+  assert.deepEqual(hResp, { behavior: 'deny', message: '사용자가 직접 거부했다(훅 아님). 이유: 메모는 남겨 둬' });
+  assert.equal(hResp.message.split('이유: ')[1], hShown, '카드 결과 줄의 이유와 message 의 이유가 다르다');
+  pass('(h) PowerShell 카드 → 명령 코드 블록(JSON 없음), 이유 타이핑 → Enter → stdin message 에 같은 이유');
 
   // ── (4) 지난 세션 → 이어하기 → 지난 기록 ──
   const transcript = await (await fetch(`${base}/api/projects/${proj.id}/sessions/${PAST}/transcript`)).json();
