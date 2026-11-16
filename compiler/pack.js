@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-// build/claude-code/ 를 의존성 없이 zip 하나로 묶는다. 같은 build면 같은 바이트(날짜 고정, 이름 정렬).
-// 쓰는 법: plenum-pack [--build <dir>] [--out <file>]  (기본 build=<cwd>/build/claude-code, out=<cwd>/dist/<name>-<version>.zip)
+// kit을 메모리에서 컴파일하고 판(variant)을 적용해 의존성 없이 zip 하나로 묶는다. 같은 입력이면 같은 바이트(날짜 고정, 이름 정렬).
+// 쓰는 법: plenum-pack [--kit <dir>] [--variant <이름> | --variant-file <경로>] [--out <file>]
+//   기본 kit=<cwd>/kit, out=<cwd>/dist/<name>-<version>.zip (name·version은 판을 적용한 .claude-plugin/plugin.json)
+//   판: --variant <이름> → kit/variants/<이름>.yaml. 둘 다 없으면 kit/variants/가 없을 때 판 없음, 있으면 variants/<kit name>.yaml
+//   경고: stderr "WARN <파일>:<줄> <메시지>", 에러: stderr "ERROR <메시지>" (종료 코드 1)
+//       plenum-pack --build <dir> [--out <file>]  — 이미 만든 build 폴더를 그대로 묶는다 (--kit·--variant·--variant-file과 같이 못 씀)
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -104,35 +108,87 @@ function buildZip(files) {
 
 function fail(msg) { process.stderr.write(`ERROR ${msg}\n`); process.exit(1); }
 
-function main() {
-  const argv = process.argv.slice(2);
-  let build = path.join(REPO, 'build', 'claude-code');
-  let out = null;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--build' && argv[i + 1]) build = path.resolve(argv[++i]);
-    else if (argv[i] === '--out' && argv[i + 1]) out = path.resolve(argv[++i]);
-    else fail(`알 수 없는 인자: ${argv[i]}\n쓰는 법: plenum-pack [--build <dir>] [--out <file>]`);
-  }
-  if (!fs.existsSync(build) || !fs.statSync(build).isDirectory()) fail(`build 폴더가 없다: ${build} (npm run build 먼저)`);
+const USAGE = '쓰는 법: plenum-pack [--kit <dir>] [--variant <이름> | --variant-file <경로>] [--out <file>]  또는  plenum-pack --build <dir> [--out <file>]';
+
+function checkManifest(text) {
   let manifest;
-  try { manifest = JSON.parse(fs.readFileSync(path.join(build, '.claude-plugin', 'plugin.json'), 'utf8')); }
+  try { manifest = JSON.parse(text()); }
   catch (e) { fail(`.claude-plugin/plugin.json을 못 읽었다: ${e.message}`); }
   const { name, version } = manifest;
   if (typeof version !== 'string' || !version) fail('plugin.json에 version이 없다');
   if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9._-]*$/.test(name)) fail(`plugin.json name이 이상하다: ${name}`);
+  return { name, version };
+}
+
+function writeZip(out, entries) {
+  const buf = buildZip(entries);
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, buf);
+  const rel = path.relative(REPO, out);
+  console.log(`${rel.startsWith('..') ? out : rel.split(path.sep).join('/')} (${entries.length} files)`);
+}
+
+// --build: 폴더를 읽어 묶기만 한다
+function packBuild(build, out) {
+  if (!fs.existsSync(build) || !fs.statSync(build).isDirectory()) fail(`build 폴더가 없다: ${build} (npm run build 먼저)`);
+  const { name, version } = checkManifest(() => fs.readFileSync(path.join(build, '.claude-plugin', 'plugin.json'), 'utf8'));
   if (!out) out = path.join(REPO, 'dist', `${name}-${version}.zip`);
 
   const names = listFiles(build);
   if (names.length === 0) fail(`build 폴더에 파일이 없다: ${build}`);
-  const buf = buildZip(names.map((name) => ({
+  writeZip(out, names.map((name) => ({
     name,
     data: toLf(fs.readFileSync(path.join(build, name))),
     executable: FORCE_EXEC.test(name) || (fs.statSync(path.join(build, name)).mode & 0o111) !== 0,
   })));
-  fs.mkdirSync(path.dirname(out), { recursive: true });
-  fs.writeFileSync(out, buf);
-  const rel = path.relative(REPO, out);
-  console.log(`${rel.startsWith('..') ? out : rel.split(path.sep).join('/')} (${names.length} files)`);
+}
+
+// kit을 메모리에서 컴파일(+판)해 바로 묶는다. 폴더에 쓰지 않는다
+function packKit(kit, sel, out) {
+  const { compileVariant, KitError } = require('./lib/compile');
+  let result;
+  try {
+    result = compileVariant(kit, sel);
+  } catch (e) {
+    if (!(e instanceof KitError)) throw e;
+    fail(e.message.split('\n').join(' '));
+  }
+  for (const w of result.warnings) process.stderr.write(`WARN ${w.file}:${w.line} ${w.message}\n`);
+  const pj = result.files.get('.claude-plugin/plugin.json');
+  const { name, version } = checkManifest(() => {
+    if (!pj) throw new Error('출력에 없다');
+    return pj.toString('utf8');
+  });
+  if (!out) out = path.join(REPO, 'dist', `${name}-${version}.zip`);
+  writeZip(out, [...result.files].map(([name, buf]) => ({
+    name,
+    data: toLf(buf),
+    executable: FORCE_EXEC.test(name) || ((result.modes.get(name) || 0) & 0o111) !== 0,
+  })));
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  let build = null;
+  let kit = null;
+  let out = null;
+  const sel = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--build' && argv[i + 1]) build = path.resolve(argv[++i]);
+    else if (argv[i] === '--out' && argv[i + 1]) out = path.resolve(argv[++i]);
+    else if (argv[i] === '--kit' && argv[i + 1]) kit = path.resolve(argv[++i]);
+    else if (argv[i] === '--variant' && argv[i + 1]) sel.variant = argv[++i];
+    else if (argv[i] === '--variant-file' && argv[i + 1]) sel.variantFile = argv[++i];
+    else fail(`알 수 없는 인자: ${argv[i]}\n${USAGE}`);
+  }
+  if (build !== null) {
+    if (kit !== null || sel.variant !== undefined || sel.variantFile !== undefined) {
+      fail(`--build는 --kit·--variant·--variant-file과 같이 쓸 수 없다 (--build는 이미 만든 폴더를 묶기만 한다)\n${USAGE}`);
+    }
+    packBuild(build, out);
+  } else {
+    packKit(kit || path.join(REPO, 'kit'), sel, out);
+  }
 }
 
 main();

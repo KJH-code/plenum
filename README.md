@@ -20,6 +20,30 @@ kit 레포의 `package.json`:
 npm run build
 ```
 
+### 판(variant)
+
+판은 한 하네스(지금은 `claude-code`)의 출력에서 일부를 빼고 글자를 바꾼 묶음이다. 친구용 공유판처럼 같은 kit에서 다른 zip을 만들 때 쓴다. `kit/variants/<이름>.yaml`에 두고, 이 폴더는 출력에 들어가지 않는다.
+
+```yaml
+harness: claude-code
+exclude:
+  skills: [extra]            # skills/extra/ 전부
+  hooks: [guard]             # hooks/guard.js + hooks.json의 호출 항목
+  files: [docs/]             # 정확한 경로 또는 /로 끝나는 폴더
+replace:
+  - from: "개인 문구"
+    to: "공유 문구"
+manifest:
+  name: demo-share
+  version: "1.0.0"
+```
+
+```bash
+npm run pack -- --variant <이름>        # 또는 --variant-file <경로>
+```
+
+`--variant`를 안 주면 `kit/variants/`가 없을 때는 판 없이(하네스 출력 그대로), 있으면 `variants/<kit.yaml name>.yaml`이 기본 판이다. 빼고 남은 파일에 뺀 이름 언급이 있으면 WARN으로 알려 준다.
+
 `kit/` 형식은 [KJH-code/jh-kit](https://github.com/KJH-code/jh-kit)의 README가 기준이다.
 
 ## 앱 실행 (Node 20.19 이상)

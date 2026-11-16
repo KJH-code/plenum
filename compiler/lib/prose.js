@@ -155,4 +155,4 @@ function proseWarnings(kit, rel, text) {
   return warnings;
 }
 
-module.exports = { proseWarnings, MAX_GAP };
+module.exports = { proseWarnings, MAX_GAP, HISTORY_HEADING };
