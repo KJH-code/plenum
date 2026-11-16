@@ -279,7 +279,7 @@ function applyVariant(kit, result, variant) {
       for (const m of h.command.matchAll(ANY_HOOK_RE)) {
         const script = `hooks/${m[1]}.js`;
         if (!files.has(script)) {
-          err(`${HOOKS_JSON}이 출력에 없는 스크립트를 부름: ${script} — exclude.hooks에 ${m[1]}을 적으면 호출 항목도 같이 빠진다`);
+          err(`${HOOKS_JSON}이 출력에 없는 스크립트를 부름: ${script} — exclude.hooks: [${m[1]}] 로 빼면 호출 항목도 같이 빠진다`);
         }
       }
     }

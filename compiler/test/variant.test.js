@@ -296,7 +296,7 @@ test('훅: 스크립트를 exclude.files로만 빼면 없는 스크립트 호출
   const vf = variantFile(c.dir, 'bad', 'harness: claude-code\nexclude:\n  files: [hooks/guard.js]\n');
   const r = pack(['--kit', c.kit, '--variant-file', vf, '--out', path.join(c.dir, 'bad.zip')]);
   assert.strictEqual(r.status, 1, r.stdout);
-  assert.match(r.stderr, /hooks\/hooks\.json이 출력에 없는 스크립트를 부름: hooks\/guard\.js — exclude\.hooks에 guard을 적으면 호출 항목도 같이 빠진다/);
+  assert.match(r.stderr, /hooks\/hooks\.json이 출력에 없는 스크립트를 부름: hooks\/guard\.js — exclude\.hooks: \[guard\] 로 빼면 호출 항목도 같이 빠진다/);
   assert.ok(!fs.existsSync(path.join(c.dir, 'bad.zip')));
 });
 
