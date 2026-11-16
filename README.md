@@ -93,6 +93,9 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 
 ## 변경 기록
 
+### 0.3.1
+- 컴파일러: 판(variant) 틀. `kit/variants/<이름>.yaml`(하네스 출력에서 빼기·치환·매니페스트 덮어쓰기, 뺀 이름이 남으면 WARN), `plenum-pack --kit/--variant/--variant-file`. 기본은 `kit.yaml` `name`과 같은 판, `variants/`가 없으면 지금과 같은 zip. 앱은 바뀌지 않았다
+
 ### 0.3.0
 - 프로젝트 창 = 세션 화면. 새 세션은 앱 안 채팅: `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio`(구독 로그인, `--bare` 없음). 모델·노력도 고르기(노력도는 `claude --help`에 `--effort`가 있을 때만)
   - 질문 카드(AskUserQuestion): 선택지 버튼, 추천 강조, 기타 직접 입력. 답은 `updatedInput.answers`
