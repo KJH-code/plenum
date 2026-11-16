@@ -7,9 +7,10 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 ## 요약
 
 - **목표 구조**: 프로바이더 = 하네스, 모델 = 그 하네스가 받는 모델. 새 모델 = 설정 파일 하나(I절). 새 프로토콜만 드라이버 코드. 역할은 기능 목록으로 판정한다. 메인 = 세션 + 승인 카드 + 이어하기, 워커 = 단발 실행 + 결과(G절 `roleOf`).
-- **드라이버는 셋**: Claude 직접(`claude-stream`, 지금 코드), 범용 ACP(`acp`), 워커용 단발(`oneshot`). 추천 근거는 F.6.
+- **드라이버는 셋**: Claude 직접(`claude-stream`, 지금 코드), 범용 ACP(`acp` — Codex 는 공식 어댑터 codex-acp 로 여기에 붙는다), ACP 없는 하네스용 단발(`oneshot`, 지금 대상 없음). 추천 근거는 F.6.
+- **Codex 로 가는 길은 둘**: 플러그인 워커는 `codex exec --json`(W1, Plenum 을 거치지 않음), Plenum 은 codex-acp(W2). 형식 변화 감시도 두 길을 따로 한다(D.1, H.4).
 - **형식 변화 대응**: 원문 보존 + `unknown` 이벤트(절대 throw 안 함), `--help`·스키마 기반 기능 감지, 버전별 녹화 fixture 와 계약 테스트, 토큰 없는 주간 drift CI, 실제 녹화는 노트북 탐침(E·G·H절).
-- **Codex**: `codex exec` 는 승인을 밖으로 못 넘긴다 → 워커 전용, 샌드박스로 막는다. 승인·질문·이어하기·한도는 `codex app-server`(experimental)에 있고, 공식 ACP 어댑터 `codex-acp` 가 그 위에 있다(C·D절).
+- **Codex**: `codex exec` 는 승인을 사람에게 넘기지 못한다 → 워커 전용, 샌드박스로 막는다. 승인·질문·이어하기·한도는 `codex app-server`(experimental)에 있고, 공식 ACP 어댑터 `codex-acp` 가 그 위에 있다(C·D절).
 - **약관**: 사용자 본인 로그인 + 수정 안 한 공식 CLI 실행 + 자격 증명 비접촉이 두 회사 문서와 맞는 유일한 형태다. 서드파티 래핑은 애매한 곳이 남는다(A절).
 
 | 절 | 내용 |
@@ -38,18 +39,18 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 | 경우 | 쪽 | 판정 | 근거 요지 (인용) | 출처 |
 |---|---|---|---|---|
 | ① Claude Code 세션이 Codex CLI를 하위 프로세스로 부름 | Anthropic | **애매 (명시 없음)** | Claude Code가 다른 CLI를 실행하는 것을 막는 조항은 찾지 못했다. 다만 AUP가 다른 회사 약관을 우회하는 행위를 금지하므로, OpenAI 약관을 지키는 것이 조건이 된다. "Engage in actions or behaviors that circumvent the guardrails or terms of other platforms or services" / "Users are responsible for ensuring that agents they build or deploy, including actions those agents take through tools … comply" | https://www.anthropic.com/legal/aup (Effective Nov 12, 2026) |
-| ① 〃 | OpenAI | **허용 명시 (조건부)** [Codex 0.169.0] | 요금 페이지의 기능 표에서 "Codex SDK, `codex exec`, and scriptable workflows"가 Plus·Pro에 available로 나온다. "`codex exec` reuses saved CLI authentication by default." 조건이 두 가지 있다. 자동화에는 API 키를 권장한다("The right way to authenticate automation is with an API key"). ChatGPT 로그인으로 CI를 돌리는 방법은 신뢰된 비공개 러너에만 쓰고, "Do not use this workflow for public or open-source repositories." OpenAI 이용약관(ToU)은 못 받았다. | https://learn.chatgpt.com/docs/pricing · https://learn.chatgpt.com/docs/non-interactive-mode · https://learn.chatgpt.com/docs/auth/ci-cd-auth |
+| ① 〃 | OpenAI | **회색 지대** [Codex 0.169.0] | **약관**: 이용약관 2(c)(iv)는 API 를 거치지 않는 자동·프로그램 방식의 출력 추출을 금지한다(원문은 사람이 브라우저로 확인, 2026-11-16). **제품 문서**: 요금 페이지의 기능 표에서 "Codex SDK, `codex exec`, and scriptable workflows"가 Plus·Pro에 available로 나온다. "`codex exec` reuses saved CLI authentication by default." 조건이 두 가지 있다. 자동화에는 API 키를 권장한다("The right way to authenticate automation is with an API key"). ChatGPT 로그인으로 CI를 돌리는 방법은 신뢰된 비공개 러너에만 쓰고, "Do not use this workflow for public or open-source repositories." → 문서는 스크립트 실행을 안내하고 약관은 API 밖 자동 추출을 금지해 둘이 맞물리지 않는다. 개인이 로컬에서 자기 계정으로 쓰는 위험은 낮다고 본다(추측). | https://openai.com/policies/terms-of-use/ · https://developers.openai.com/codex/auth · https://learn.chatgpt.com/docs/pricing · https://learn.chatgpt.com/docs/non-interactive-mode · https://learn.chatgpt.com/docs/auth/ci-cd-auth |
 | ② Codex(ChatGPT 로그인)가 `claude -p`를 하위 프로세스로 부름 | Anthropic | **애매 (허용 쪽 근거 있음)** [CC 2.1.325] | 소비자 약관은 자동화 접근을 금지하면서 예외를 둔다: "Except … where we otherwise explicitly permit it, to access the Services through automated or non-human means…". Claude Code 문서는 구독 OAuth를 스크립트용으로 안내한다: "For CI pipelines, scripts … generate a one-year OAuth token with `claude setup-token`" / "This token authenticates with your Claude subscription". 하지만 다른 회사 에이전트가 호출하는 경우는 명시가 없다. 또 "usage limits … assume ordinary, individual usage of Claude Code and the Agent SDK"라는 전제가 붙어 있다. | https://www.anthropic.com/legal/consumer-terms (Effective Oct 8, 2025) · https://code.claude.com/docs/en/authentication · https://code.claude.com/docs/en/legal-and-compliance |
-| ② 〃 | OpenAI | **애매 (명시 없음)** | 받아 본 Codex 문서에는 Codex가 다른 회사 에이전트 CLI를 실행하는 것을 다루는 조항이 없다. ToU와 Usage Policies는 못 받았다(403). | https://learn.chatgpt.com/docs/auth · (못 받음) https://openai.com/policies/usage-policies |
+| ② 〃 | OpenAI | **애매 (명시 없음)** | Codex 가 다른 회사 에이전트 CLI 를 실행하는 것을 다루는 조항은 문서·약관에 없다. 이용약관 2(c)(iv)(API 밖 자동 추출 금지)는 Codex 출력에 대한 조항이라 이 경우(Codex 가 남을 부름)에는 직접 걸리지 않는다(추측). Usage Policies 는 못 받았다(403). | https://openai.com/policies/terms-of-use/ · https://learn.chatgpt.com/docs/auth · (못 받음) https://openai.com/policies/usage-policies |
 | ③ 서드파티 앱(Plenum)이 `claude -p`를 사용자의 구독 로그인으로 래핑 | Anthropic | **애매. 경계선은 금지 명시** [CC 2.1.325] | **금지 명시:** "Anthropic does not permit third-party developers to offer Claude.ai login into their own applications, or to route requests through … plan credentials on behalf of their users." / "developers may not collect, store, or intermediate Claude.ai credentials or session tokens". **금지 아님 명시:** "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription". **애매:** Agent SDK 문서에 "does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK"가 있고, 헤드리스 문서는 `claude -p`를 "the Agent SDK via the CLI"라고 부른다. | https://code.claude.com/docs/en/legal-and-compliance · https://code.claude.com/docs/en/agent-sdk/overview · https://code.claude.com/docs/en/headless · AUP |
-| ③ 서드파티 앱이 Codex를 ChatGPT 로그인으로 래핑 | OpenAI | **허용 명시 (기술 문서 기준. 약관은 미확인)** [Codex 0.169.0] | app-server 문서: "Use it when you want a deep integration inside your own product: authentication, conversation history, approvals, and streamed agent events." 인증 모드에 대해서는 "`chatgpt` – Codex owns the ChatGPT OAuth flow, persists tokens, and refreshes them". SDK 문서: "Integrate Codex within your own application". 클라이언트 식별에 대해서는 "Use `clientInfo.name` to identify your client". | https://learn.chatgpt.com/docs/app-server · https://learn.chatgpt.com/docs/codex-sdk |
+| ③ 서드파티 앱이 Codex를 ChatGPT 로그인으로 래핑 | OpenAI | **회색 지대 (문서는 허용, 약관은 ①과 같은 긴장)** [Codex 0.169.0] | 이용약관 2(c)(iv) 는 ①과 같다. app-server 문서: "Use it when you want a deep integration inside your own product: authentication, conversation history, approvals, and streamed agent events." 인증 모드에 대해서는 "`chatgpt` – Codex owns the ChatGPT OAuth flow, persists tokens, and refreshes them". SDK 문서: "Integrate Codex within your own application". 클라이언트 식별에 대해서는 "Use `clientInfo.name` to identify your client". | https://openai.com/policies/terms-of-use/ · https://learn.chatgpt.com/docs/app-server · https://learn.chatgpt.com/docs/codex-sdk |
 
 ### A.2 해설
 
 **① Claude 메인 + Codex 워커**
-- OpenAI 쪽은 근거가 가장 분명하다. Plus·Pro 기능 표에 스크립트 실행이 들어 있고, `codex exec`는 저장된 ChatGPT 로그인을 그대로 쓴다 [Codex 0.169.0].
+- OpenAI 쪽은 문서와 약관이 엇갈린다. 제품 문서는 유료 요금제 기능 표에 스크립트 실행을 넣고 `codex exec` 가 저장된 ChatGPT 로그인을 그대로 쓴다고 안내한다 [Codex 0.169.0]. 같은 문서가 자동화에는 API 키를 권장한다. 이용약관 2(c)(iv)는 API 를 거치지 않는 자동·프로그램 방식의 출력 추출을 금지한다.
 - Anthropic 쪽은 이 행위를 직접 다루는 조항이 없다. AUP 때문에 "OpenAI 약관을 지킬 것"이 간접 조건이 될 뿐이다.
-- 걸리는 점: OpenAI ToU 원문을 이번에 받지 못했다. 기억 기반 추측으로는 ToU에 "Output을 자동·프로그램으로 추출하지 말라"는 문구가 있었다. 이 문구와 Codex 제품 문서의 관계는 애매하다.
+- 결론: **회색 지대.** 개인이 자기 기기에서 자기 계정으로 쓰는 위험은 낮다고 본다(추측). Plenum 은 사용자마다 각자 로그인하고 자격 증명을 공유·보관하지 않는다(A.3). README 에 "각 CLI 약관은 각자 확인, 자동화에는 API 키가 권장된다"를 적는다.
 
 **② Codex 메인 + Claude 워커 (판정만 함)**
 - Anthropic은 본인의 구독 토큰을 "scripts"에 쓰라고 안내한다. 그래서 사용자 본인이 수정하지 않은 `claude`를 스크립트로 돌리는 것은 허용 쪽으로 읽힌다.
@@ -88,7 +89,7 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 추측:
 10. 워커마다 `CODEX_HOME`을 따로 두고 `auth.json`을 복사하지 않는다. 토큰 갱신이 서로 꼬일 수 있다. OpenAI가 CI 맥락에서 "Do not share the same file across concurrent jobs or multiple machines"라고 쓴 것을 로컬에도 적용한 추측이다.
 11. 상시 무인 루프나 대량 병렬 워커는 "ordinary, individual usage"를 벗어날 수 있다. 동시 실행 워커 수에 상한을 두는 것을 권장한다.
-12. README에 "각 CLI의 약관과 요금제 조건은 사용자 책임이며, Plenum은 자격 증명을 다루지 않는다"고 고지한다.
+12. README에 "각 CLI의 약관과 요금제 조건은 각자 확인한다. 자동화에는 API 키가 권장된다(OpenAI 문서). Plenum은 자격 증명을 다루지 않는다"고 고지한다. (근거: OpenAI 이용약관 2(c)(iv), [Codex auth](https://developers.openai.com/codex/auth))
 
 ### A.4 확인한 페이지 (2026-11-16)
 
@@ -102,7 +103,7 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 | https://code.claude.com/docs/en/authentication | 받아 봄 (200) | |
 | https://support.claude.com/en/articles/11145838 | 받아 봄 (200) | 관련 조항 없음 |
 | https://www.anthropic.com/legal/commercial-terms | 받아 봄 (200) | Effective Jun 17, 2025. 이 절의 쟁점과 직접 관련된 문구 없음 (훑기만 함) |
-| https://openai.com/policies/terms-of-use (row-terms-of-use 포함) | **못 받음** (403) | 내용 칸에 쓴 것은 기억 기반 추측 |
+| https://openai.com/policies/terms-of-use/ | 이 환경에서는 못 받음 (403). **사람이 브라우저로 확인**(2026-11-16): 2(c)(iv) API 밖 자동·프로그램 방식 출력 추출 금지 | 위 표의 약관 판정은 이 확인 기준 |
 | https://openai.com/policies/usage-policies | **못 받음** (403) | |
 | https://help.openai.com/en/articles/11369540 | **못 받음** (403) | |
 | https://learn.chatgpt.com/docs/auth, /non-interactive-mode, /auth/ci-cd-auth, /codex-sdk, /app-server, /pricing | 받아 봄 (200) | developers.openai.com/codex/*에서 리다이렉트됨 |
@@ -110,7 +111,7 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 
 ## B. Codex 기능 지도
 
-기준: Codex CLI 0.169.0(`--help`·`app-server generate-json-schema` 실측, 소스 태그 `rust-v0.169.0`, 공식 문서 2026-11-16). 왼쪽 열은 Claude Code 플러그인이 쓰는 기능 종류다(이 레포 작성자가 쓰는 플러그인 기준. 내부 구조는 적지 않는다).
+기준: Codex CLI 0.169.0(`--help`·`app-server generate-json-schema` 실측, 소스 태그 `rust-v0.169.0`, 공식 문서 2026-11-16). 왼쪽 열은 Claude Code 플러그인이 흔히 쓰는 기능 종류다(특정 플러그인의 내부 구조는 적지 않는다).
 
 | Claude Code 쪽 기능 | Codex 대응물 | 상태 | 차이·우회 | 근거 |
 |---|---|---|---|---|
@@ -120,17 +121,17 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 | 권한 규칙 (`permissions.allow/deny`, `Bash(git *)` 꼴) | execpolicy `.rules` (Starlark 풍 `prefix_rule(pattern=[…], decision=…)`), `~/.codex/rules/default.rules` + 샌드박스 모드 + 승인 정책 | **있음 (모양 다름)** | 규칙 언어가 다르다. 파일 경로 단위 Read/Edit 규칙은 없고 샌드박스(read-only / workspace-write / `--add-dir`)가 맡는다. 변환은 명령 접두 규칙만 1:1 | [rules](https://developers.openai.com/codex/rules), [sandbox](https://developers.openai.com/codex/sandbox) |
 | 패키징 (플러그인 + 마켓플레이스) | `codex plugin add/list/remove`, `codex plugin marketplace add/list/remove/upgrade` | **있음** | 플러그인 형식(묶을 수 있는 것: 스킬·훅·MCP?)은 이번에 확인 못 함 → 다음 단계 조사 | `codex plugin --help`(0.169.0) |
 | 압축 전 상태 저장 (PreCompact 훅) | PreCompact·PostCompact 훅, `thread/compact/start`, `compact_prompt`·`experimental_compact_prompt_file` | **있음** | 훅으로 같은 일을 할 수 있다. 압축 프롬프트 파일을 직접 줄 수 있어 Claude 보다 넓다 | [config reference](https://developers.openai.com/codex/config-reference) |
-| 커밋 신원 검사 (PreToolUse 훅이 `git commit`·`push` 명령을 검사해 막음) | PreToolUse 훅 + execpolicy `prefix_rule(["git","push"], decision="prompt")` | **있음 (우회 필요)** | 훅이 같은 자리에 있으므로 같은 검사 스크립트를 쓸 수 있다(추측: 훅 입력의 명령 칸 이름 확인 필요). 더 확실한 이중 장치는 레포의 `core.hooksPath` git 훅(하네스와 무관하게 동작) | 위 hooks, rules |
+| 명령 검사 훅 (PreToolUse 훅이 특정 셸 명령, 예 `git push` 를 검사해 막음) | PreToolUse 훅 + execpolicy `prefix_rule(["git","push"], decision="prompt")` | **있음 (우회 필요)** | 훅이 같은 자리에 있으므로 같은 검사 스크립트를 쓸 수 있다(추측: 훅 입력의 명령 칸 이름 확인 필요). 더 확실한 이중 장치는 레포의 `core.hooksPath` git 훅(하네스와 무관하게 동작) | 위 hooks, rules |
 | 프로젝트 지침 (`CLAUDE.md`) | `AGENTS.md` (전역 → 레포 루트 → cwd 순서로 쌓임), `project_doc_fallback_filenames` | **있음** | Claude Code 2.1.277+ 는 CLAUDE.md 가 없을 때만 AGENTS.md 를 읽는다. 공용 지침은 AGENTS.md 하나 + CLAUDE.md 에서 `@AGENTS.md` import | [AGENTS.md](https://developers.openai.com/codex/guides/agents-md), [Claude Code memory](https://code.claude.com/docs/en/memory) |
 | 모델·노력 고정 워커 | `-m <모델>`, `-c model_reasoning_effort=<값>`, 프로필 `-p` (`$CODEX_HOME/<이름>.config.toml`) | **있음** | 노력 값은 열거형이 아니라 "모델이 광고하는 문자열"(`ReasoningEffort`). 허용 값은 app-server `model/list` 로 조회 | 스키마 `ReasoningEffort`, `codex exec --help` |
 | 남은 한도 표시 | app-server `account/rateLimits/read`·`account/rateLimits/updated` (`usedPercent`, `windowDurationMins`, `resetsAt`) | **있음 (app-server 만)** | `exec --json` 에는 토큰 수만. 창 이름(5시간/주간)은 `windowDurationMins` 값으로 판별 | 스키마 `GetAccountRateLimitsResponse` |
 | 질문 도구 (AskUserQuestion) | `request_user_input` → app-server `item/tool/requestUserInput` (experimental, 1~3개 질문) | **있음 (app-server 만)** | exec 에서는 "not supported in exec mode" 로 거절 | `codex-rs/exec/src/lib.rs`(0.169.0), 스키마 `ToolRequestUserInputParams` |
 
-요약: **대응물이 없는 기능은 없다.** 차이는 모양(TOML·Starlark·폴더 위치)과 "exec 단발 모드에서는 승인·질문이 안 된다"는 점이다. 따라서 jh-kit 쪽에서 Codex 를 워커로 쓸 때는 승인 대신 **샌드박스로 막고**, 질문이 필요한 일은 워커로 보내지 않는다.
+요약: **대응물이 없는 기능은 없다.** 차이는 모양(TOML·Starlark·폴더 위치)과 "exec 단발 모드에서는 승인·질문이 안 된다"는 점이다. 따라서 플러그인 쪽에서 Codex 를 워커로 쓸 때는 승인 대신 **샌드박스로 막고**, 질문이 필요한 일은 워커로 보내지 않는다.
 
 ## C. Codex 비대화 실행
 
-기준 버전: **Codex CLI 0.169.0** (npm `@openai/codex`, 2026-11-12 태그 `rust-v0.169.0`). 클라우드 컨테이너(Linux)에 설치해 `--help` 75개와 app-server 스키마를 받았다. 로그인·모델 호출은 하지 않았다. 실제 출력은 E절 탐침으로 받는다.
+기준 버전: **Codex CLI 0.169.0** (npm `@openai/codex`, 2026-11-12 태그 `rust-v0.169.0`). 클라우드 컨테이너(Linux)에 설치해 `--help` 74개(+ `--version` 1개)와 app-server 스키마를 받았다. 로그인·모델 호출은 하지 않았다. 실제 출력은 E절 탐침으로 받는다.
 
 ### C.1 두 가지 실행 방식
 
@@ -138,7 +139,7 @@ Plenum 은 지금 `claude -p` stream-json 하나만 다룬다. 이 문서는 아
 |---|---|---|
 | 형식 | `--json`: 이벤트 JSONL, 최상위 `type` 8종 | JSON-RPC 2.0 (stdio JSONL, `"jsonrpc"` 칸 생략). ClientRequest 109·ServerNotification 86·ServerRequest 10 |
 | 상태 | 안정 | help 에 `[experimental]` 표시 |
-| 승인 | **밖으로 못 넘긴다.** `approval_policy: Never` 고정, 승인·질문 요청은 거절 | 서버→클라이언트 요청으로 넘긴다 |
+| 승인 | **사람에게 못 넘긴다.** 기본 `approval_policy: Never`, 승인·질문 서버 요청은 거절. 예외: `--approve-for-me` 로 자동 리뷰어를 고르면 정책을 다시 만들어 그 리뷰어가 답한다(`exec/src/lib.rs` "Rebuild below if the fully resolved reviewer is AutoReview") | 서버→클라이언트 요청으로 넘긴다 |
 | 스키마 | 소스 `codex-rs/exec/src/exec_events.rs` | `codex app-server generate-json-schema` / `generate-ts` 로 **버전마다 생성 가능** (`--experimental` 포함 여부로 다름) |
 | Plenum 역할 | 워커 (단발 실행 + 결과) | 메인 조건을 채움 (D절) |
 
@@ -166,7 +167,7 @@ item `type`: `agent_message`, `reasoning`, `command_execution{command, aggregate
 | `-s/--sandbox` | `read-only`(exec 기본), `workspace-write`, `danger-full-access` | `codex exec --help`, [sandbox](https://developers.openai.com/codex/sandbox) |
 | `-a/--ask-for-approval` | 대화형 최상위 `codex` 에만. help 값 `on-request`, `never`. 스키마 `AskForApproval` 에는 `untrusted`·`on-request`·`never`·`granular{…}` | `codex --help`, 스키마 `ThreadStartParams` |
 | `--full-auto` | **0.169.0 help 에 없음** (예전 문서·스크립트가 쓰던 플래그. 바뀐 사례) | `grep full-auto help/*` 0건 |
-| `--approve-for-me` | exec 전용. 승인 요청을 자동 리뷰어로 보냄. 스키마 `ApprovalsReviewer`: `user`, `auto_review`, `guardian_subagent` | `codex exec --help` |
+| `--approve-for-me` | 최상위 `codex` 와 `exec`·`resume`·`fork`·`archive`·`unarchive`·`delete` help 에 있음. 승인 요청을 사람 대신 자동 리뷰어로 보냄. 스키마 `ApprovalsReviewer`: `user`, `auto_review`, `guardian_subagent` | `codex --help`, `codex exec --help` |
 | `--dangerously-bypass-approvals-and-sandbox` | 승인·샌드박스 전부 끔. 외부 샌드박스 안에서만 | `codex exec --help` |
 | app-server 승인 요청 | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval`(범위 `turn`\|`session`), 구버전 `execCommandApproval`·`applyPatchApproval` | 스키마 `methods` |
 | 승인 답 `decision` | `accept`, `acceptForSession`, `{acceptWithExecpolicyAmendment}`(영구 규칙), `{applyNetworkPolicyAmendment}`(영구), `decline`(거부·턴 계속), `cancel`(거부·턴 중단). 파일 변경은 앞의 넷 중 `accept\|acceptForSession\|decline\|cancel` | 스키마 `CommandExecutionApprovalDecision`, [app-server](https://developers.openai.com/codex/app-server) |
@@ -198,16 +199,18 @@ item `type`: `agent_message`, `reasoning`, `command_execution{command, aggregate
 
 ### D.1 Codex 워커 (이번 설계의 주 경로)
 
-워커는 단발 실행 후 결과를 돌려준다. 두 갈래가 있다.
-- **W1. jh-kit 워커 → `codex exec`** — Claude 메인 세션 안에서 워커 에이전트가 Bash 로 부른다(지금 이미지 워커와 같은 길). Plenum 을 거치지 않는다.
-- **W2. Plenum → ACP(codex-acp)** — Plenum 이 직접 Codex 세션을 띄울 때(F절 추천).
+워커는 단발 실행 후 결과를 돌려준다. Codex 로 가는 길은 **둘뿐**이고, 서로 다른 프로그램이 쓴다.
+- **W1. 플러그인 워커 → `codex exec --json`** — Claude 메인 세션 안의 워커 에이전트가 셸 명령으로 부른다. Plenum 을 거치지 않는다(Plenum 이 꺼져 있어도 됨). 승인이 없으므로 샌드박스로 막는다.
+- **W2. Plenum → ACP(codex-acp)** — Plenum 이 Codex 를 띄울 때는 **항상** 이 길이다. 대화(메인 후보)든 워커든 같은 ACP 드라이버를 쓰고, 워커는 "세션 하나 + 프롬프트 하나 + 결과 받고 닫기"로 돌린다(F절 추천 (2)). Plenum 에 `codex exec` 드라이버는 만들지 않는다.
+
+형식 변화 감시도 이 두 길을 따로 한다(H.4).
 
 | 지금 Claude 흐름 | W1 `codex exec --json` | W2 ACP (codex-acp → app-server) | 근거 |
 |---|---|---|---|
-| 승인 카드 `control_request can_use_tool` → `allow`/`deny` | **✗** 승인을 밖으로 못 넘김(never 고정). **대신 샌드박스로 막는다**: `--sandbox workspace-write` + 전용 git worktree. 막힌 명령은 `command_execution.status = declined`/`failed` 로 보고에 남는다 | ✓ `session/request_permission` (옵션 `allow_once`·`allow_always`·`reject_once`) ← app-server `requestApproval` | `exec/src/lib.rs`(0.169.0), codex-acp `src/permissions/options.ts` |
+| 승인 카드 `control_request can_use_tool` → `allow`/`deny` | **✗** 승인을 밖으로 못 넘김(기본 승인 정책 `never`. 예외: `--approve-for-me` 로 자동 리뷰어를 고르면 그 리뷰어가 답함 — 사람에게 오지 않는 것은 같다). **대신 샌드박스로 막는다**: `--sandbox workspace-write` + 전용 git worktree. 막힌 명령은 `command_execution.status = declined`/`failed` 로 보고에 남는다 | ✓ `session/request_permission` (옵션 kind `allow_once`·`allow_always`·`reject_once`·`reject_always`) ← app-server `requestApproval` | `exec/src/lib.rs`(0.169.0), codex-acp `src/permissions/options.ts` |
 | 거부 이유 문구(deny `message`) | ✗ | △ ACP 응답에 이유 칸이 없다. `reject_once` 만 전달 → 이유는 다음 프롬프트로 따로 보낸다 | ACP schema `RequestPermissionOutcome` |
 | 도구 입력 고치기(`updatedInput`) | ✗ | ✗ app-server 답에 해당 칸 없음 | 스키마 `CommandExecutionRequestApprovalResponse` |
-| "이 세션 동안 허용" `addRules` destination `session` | ✗ (샌드박스 범위로 대신) | ✓ `allow_always` = codex-acp 에서 `acceptForSession`("don't ask again for this command in this session"). **주의: claude-agent-acp 의 `allow_always` 는 영구 설정일 수 있어 뜻이 다르다** → 드라이버가 프로바이더별로 `scope` 를 채운다(G절) | codex-acp `options.ts`, claude-agent-acp `src/permissions/effects.ts` |
+| "이 세션 동안 허용" `addRules` destination `session` | ✗ (샌드박스 범위로 대신) | ✓ 단, **kind 가 아니라 optionId 로 고른다.** codex-acp 2.6.0 에서 kind `allow_always` 는 범위가 다른 옵션 여럿에 쓰인다: 세션 범위 = `allow_for_session`(← `acceptForSession`), `allow_permissions_session`, MCP `allow_session` / **영구** = `accept_execpolicy_amendment`("commands that start with …"), `apply_network_policy_amendment:<n>`("in the future", 거부 쪽은 `reject_always`), MCP `allow_always`. claude-agent-acp 의 `allow_always` 도 CLI 제안 그대로라 영구일 수 있다 → 드라이버가 **프로바이더별 optionId 표**로 `scope` 를 채우고, Plenum 은 `session` 만 보여 준다(G절). 파일 변경의 `acceptForSession` 은 "같은 파일" 범위다(스키마 설명) | codex-acp `src/permissions/options.ts`·`option-ids.ts`·`mcp.ts`, claude-agent-acp `src/permissions/effects.ts` |
 | 질문 카드 (AskUserQuestion → `updatedInput.answers`) | ✗ exec 는 `request_user_input` 을 거절. 질문이 필요한 일은 워커로 보내지 않는다(지시서를 완결되게 쓴다) | ✓ ACP `elicitation/create`(form) ← app-server `item/tool/requestUserInput`(experimental). 클라이언트가 `clientCapabilities.elicitation.form` 을 광고해야 함 | `exec/src/lib.rs`, codex-acp `CodexElicitationHandler.ts`, [ACP elicitation](https://agentclientprotocol.com/protocol/v1/elicitation) |
 | 사용량 `rate_limit_event…unifiedWindows.five_hour/seven_day` | △ 토큰 수만(`turn.completed.usage`). 남은 한도 % 없음 | △ codex-acp 는 rate limit 을 `/status` 텍스트로만 준다. 구조화된 창 정보가 필요하면 app-server `account/rateLimits/read` 를 따로 한 번 부르는 작은 확인 명령이 필요(추측: 워커 시작 전 1회) | codex-acp `CodexEventHandler.ts`, 스키마 `GetAccountRateLimitsResponse` |
 | 중단 `control_request interrupt` → stdin 닫기 → 트리 종료 | △ SIGINT → 안에서 `turn/interrupt` → 턴 종료. Windows 에서는 Ctrl+C 이벤트 전달이 어려워 **트리 종료(taskkill /T)** 로 대신(추측, 탐침 ⑤로 확인) | ✓ `session/cancel` → `stopReason: cancelled` | `exec/src/lib.rs`, [ACP cancellation](https://agentclientprotocol.com/protocol/v1/cancellation) |
@@ -247,7 +250,7 @@ item `type`: `agent_message`, `reasoning`, `command_execution{command, aggregate
 | `lib/cmd.mjs` | PATH·PATHEXT 에서 절대 경로를 찾고(`.cmd` 는 `cmd.exe /d /s /c` + verbatim 인자), UTF-8 실패 시 euc-kr 로 다시 읽고, 시간 초과면 프로세스 트리째 종료 |
 | `lib/codex.mjs` | 장면 6개 + 작은 app-server 클라이언트. 플래그·승인 값은 **설치된 버전의 help·스키마를 읽고 고른다**(버전이 달라도 기억으로 박은 값을 쓰지 않음). 모델 턴 상한 8 |
 | `lib/claude.mjs` | claude 가 기준 버전(2.1.248)이 아닐 때만 장면 01·02·04·05 재녹화. 승인 답, "이 세션 동안 허용"은 `addRules` 만 destination `session` |
-| `lib/redact.mjs` | 홈 경로(세 표기)·사용자 이름·컴퓨터 이름·이메일·계정/설치 id·JWT·`sk-` 키 가리기, 남은 의심 패턴 리포트 |
+| `lib/redact.mjs` | 홈 경로(세 표기)·사용자 이름·컴퓨터 이름·이메일·계정/설치 id·JWT·`sk-` 키·**요금제 칸**(`planType`·`plan_type`·`planName`·`limitName` 값 → `PLAN`, 한도 숫자는 그대로) 가리기, 남은 의심 패턴 리포트 |
 | `lib/shapes.mjs` + `ref/claude-2.1.323-shapes.json` | 기존 녹화의 (type/subtype → 키 집합) 요약과 새 녹화를 비교한 `compare.md` — 형식 변화 감지의 첫 실전 |
 
 ### 장면 (Codex)
@@ -262,7 +265,7 @@ item `type`: `agent_message`, `reasoning`, `command_execution{command, aggregate
 | ⑥ | 핸드셰이크·한도 | app-server `initialize` → `initialized` → `account/read` → `account/rateLimits/read` | 0 |
 
 - 과금 방지: 모든 codex 실행 env 에서 `OPENAI_API_KEY`·`CODEX_API_KEY` 를 뺀다. `codex login status` 가 ChatGPT 로그인이 아니면 ①~⑤ 를 건너뛰고 ⑥ 만 한다.
-- [실측, 0.169.0 로그인 없이] app-server 는 한 줄에 JSON 하나, 응답에 `jsonrpc` 칸이 없고 요청에서 빼도 받는다. `initialize` 응답 `{userAgent, codexHome, platformFamily, platformOs}`. 로그인 없이 `account/read` = `{account: null, requiresOpenaiAuth: true}`, `account/rateLimits/read` = 오류 -32600 "authentication required". 알림에 `installationId`·`serverName`(컴퓨터 이름)이 섞여 나와서 가리기 대상에 넣었다.
+- [실측, 0.169.0 로그인 없이] app-server 는 한 줄에 JSON 하나, 응답에 `jsonrpc` 칸이 없고 요청에서 빼도 받는다. `initialize` 응답 `{userAgent, codexHome, platformFamily, platformOs}`. 로그인 없이 `account/read` = `{account: null, requiresOpenaiAuth: true}`, `account/rateLimits/read` = 오류 -32600 "authentication required". 알림에 `installationId`·`serverName`(컴퓨터 이름)이 섞여 나와서 가리기 대상에 넣었다. 요금제 칸은 공개 레포 fixture 로 들어가므로 가린다(한도 해석은 `windowDurationMins`·`usedPercent` 로 충분).
 - 확인 못 한 것(노트북에서 처음): 승인·중단·이어하기 실제 흐름. ③의 `git --version` 은 안전 명령으로 분류돼 승인 없이 실행될 수 있다(추측) — 그러면 녹화에 "승인 요청 없음"이 남고 그것도 정보다.
 
 ### 실행 안내 (PowerShell)
@@ -271,7 +274,7 @@ item `type`: `agent_message`, `reasoning`, `command_execution{command, aggregate
 
 ```powershell
 cd $HOME\Downloads
-Expand-Archive .\plenum-probe-step0.zip -DestinationPath .
+Expand-Archive .\plenum-probe-step0.zip -DestinationPath . -Force
 ```
 
 ```powershell
@@ -296,7 +299,7 @@ Get-Content .\out\run-log.txt
 ### 클라우드에서 한 확인
 
 - 모든 `.mjs` `node --check` 통과. `pwsh` 가 없어 `probe.ps1` 파싱 검사는 노트북 첫 실행으로 미룸.
-- 드라이런(로컬 codex 0.169.0 + claude 2.1.325): help claude 50여 개·codex 74개, 스키마 2종, ⑥ 핸드셰이크까지 돌고 모델 턴 0, 리포트 "남은 것 없음".
+- 드라이런(로컬 codex 0.169.0 + claude 2.1.325): help claude 50여 개·codex 74개(+ `--version`), 스키마 2종, ⑥ 핸드셰이크까지 돌고 모델 턴 0, 리포트 "남은 것 없음".
 - 가짜 codex·claude 로 모든 장면 끝까지: 거부 → 세션 허용 순서, 첫 델타 뒤 중단, `--resume` 인자, addRules 만 session, 손자 프로세스까지 시간 초과 트리 종료.
 
 ## F. ACP 평가
@@ -354,7 +357,7 @@ Get-Content .\out\run-log.txt
 | `@zed-industries/claude-code-acp` | 0.16.2 (2026-03-26). **deprecated** → `@agentclientprotocol/claude-agent-acp` | — | claude-agent-sdk 0.2.44 | — | — | — | — | — | [npm][npm-zcca] |
 | `@zed-industries/claude-agent-acp` | 0.23.1 (2026-03-26). **deprecated** → 위와 같음 | — | claude-agent-sdk 0.2.83 | — | — | — | — | — | [npm][npm-zcaa] |
 | `claude-agent-acp` (스코프 없음) | 0.100.3 (2026-11-08). **제3자 포크**(저장소 dongitran/claude-agent-acp), 공식 아님 | — | claude-agent-sdk 0.3.312 | 미확인 | 미확인 | 미확인 | 미확인 | 미확인 | [npm][npm-fork] |
-| **`@agentclientprotocol/codex-acp`** (공식. 레지스트리 저자: OpenAI, JetBrains, Zed). TypeScript로 `codex app-server` JSON-RPC 위에 구현 | 2.6.0 (2026-11-08), preview 2.6.1-preview.5 | `6567651` 2026-11-12 | `@openai/codex` ^0.166.0 (=0.166.x 고정), `@agentclientprotocol/sdk` ~2.4.0(npm 판) / ~2.6.0(HEAD) | ✓ `session/request_permission`. `accept`→`allow_once`, **`acceptForSession`→`allow_always`("이 세션 동안")**, `decline`/`cancel`→`reject_once` | ✓ `request_user_input`과 `request_user_input_async`를 form elicitation으로 전달 | ✓ `loadSession: true` | `account/rateLimits/updated`를 받아 **세션 상태에만 저장**하고 `/status` 명령 텍스트로만 보여 준다. 구조화된 전달은 없다. `_meta.quota`에는 토큰 수만 | npx(Node). win32 spawn 분기는 있으나 README에 Windows 언급이 없어 실동작 미확인 | [npm][npm-cxa], [package.json][cxa-pkg], [options.ts][cxa-opt], [CodexElicitationHandler][cxa-elic], [CodexAsyncQuestions][cxa-async], [loadSession][cxa-load], [rateLimits 처리][cxa-rl], [/status][cxa-status], [CodexCli.ts][cxa-cli] |
+| **`@agentclientprotocol/codex-acp`** (공식. 레지스트리 저자: OpenAI, JetBrains, Zed). TypeScript로 `codex app-server` JSON-RPC 위에 구현 | 2.6.0 (2026-11-08), preview 2.6.1-preview.5 | `6567651` 2026-11-12 | `@openai/codex` ^0.166.0 (=0.166.x 고정), `@agentclientprotocol/sdk` ~2.4.0(npm 판) / ~2.6.0(HEAD) | ✓ `session/request_permission`. `accept`→`allow_once`, `acceptForSession`→`allow_always`(optionId `allow_for_session`, 세션 범위), **`acceptWithExecpolicyAmendment`→`allow_always`(optionId `accept_execpolicy_amendment`, 영구)**, 네트워크 규칙→`allow_always`/`reject_always`(영구), `decline`/`cancel`→`reject_once`. **kind 만으로는 세션/영구를 못 가른다 → optionId 로 판별** | ✓ `request_user_input`과 `request_user_input_async`를 form elicitation으로 전달 | ✓ `loadSession: true` | `account/rateLimits/updated`를 받아 **세션 상태에만 저장**하고 `/status` 명령 텍스트로만 보여 준다. 구조화된 전달은 없다. `_meta.quota`에는 토큰 수만 | npx(Node). win32 spawn 분기는 있으나 README에 Windows 언급이 없어 실동작 미확인 | [npm][npm-cxa], [package.json][cxa-pkg], [options.ts][cxa-opt], [CodexElicitationHandler][cxa-elic], [CodexAsyncQuestions][cxa-async], [loadSession][cxa-load], [rateLimits 처리][cxa-rl], [/status][cxa-status], [CodexCli.ts][cxa-cli] |
 | `@zed-industries/codex-acp` (Rust, 구판) | 0.16.0. **deprecated** → `@agentclientprotocol/codex-acp` | `296069e` 2026-07-22 "Development has moved…" | ACP 0.14.0 | — | — | — | — | — | [npm][npm-zcxa], [README][zcxa] |
 | 그 밖 공식 목록 | 레지스트리 46개(registry v1.0.0), 문서 목록 50여 개 | — | — | — | — | — | — | — | [registry.json][acp-reg], [agents][acp-agents]. 네이티브 지원 목록은 J.1 |
 
@@ -378,7 +381,7 @@ Get-Content .\out\run-log.txt
 | 메인 조건 | 충족 | 근거 |
 |---|---|---|
 | 세션 (새로 만들기·프롬프트·스트리밍) | ✓ | [CodexAcpServer.ts][cxa-load] |
-| 승인 카드 (한 번 / 세션 동안 / 거절) | ✓ (`acceptForSession`이 `allow_always`로 매핑) | [options.ts][cxa-opt] |
+| 승인 카드 (한 번 / 세션 동안 / 거절) | ✓ (세션 범위 = optionId `allow_for_session`. 같은 kind `allow_always` 인 영구 옵션은 드라이버가 숨김) | [options.ts][cxa-opt] |
 | 이어하기 | ✓ `loadSession: true` | [CodexAcpServer.ts][cxa-load] |
 | 질문 카드 | ✓ form elicitation | [CodexElicitationHandler][cxa-elic] |
 | 중단 | ✓ `session/cancel` | [cancellation][acp-cancel] |
@@ -483,7 +486,7 @@ Get-Content .\out\run-log.txt
 
 이름 규칙:
 - 개념 이름은 ACP를 따른다: `session`, `prompt`, `sessionUpdate`, `toolCall`, `requestPermission`, `stopReason`, `PermissionOption.kind`.
-- ACP에 없는 개념(질문 카드, 한도)은 `x` 접두어 없이 Plenum 이름을 쓰되, `ext: true` 표시를 단다. ACP에 같은 개념이 생기면 이름을 맞춰 옮긴다.
+- 질문 카드는 ACP `elicitation`(form) 이름을 쓴다. ACP 에 없는 개념(한도 창, 하위 작업)만 Plenum 이름을 쓰고 `ext: true` 표시를 단다. ACP 에 같은 개념이 생기면 이름을 맞춰 옮긴다.
 - 지금 `app/server/chatTypes.ts` 의 `ChatEvent`·`Card` 는 이 모델의 Claude 전용 부분집합이다. 0.4.x에서 아래 타입으로 옮기되, 화면이 보는 SSE 모양은 한 번에 바꾸지 않고 어댑터 층이 지금 모양으로 다시 펼친다(동작 그대로).
 
 ```ts
@@ -536,9 +539,12 @@ export interface PermissionOption {
   optionId: string;                           // 드라이버가 하네스 답으로 되돌릴 키
   name: string;                               // 버튼 글자
   kind: PermissionOptionKind;
-  /** allow_always 의 범위. Claude addRules(session) = 'session', Codex acceptForSession = 'session'.
-   *  'persistent'(설정 파일에 저장)는 Plenum 이 고르지 않는다 — 고르면 드라이버가 거부 */
-  scope?: 'session' | 'persistent';
+  /** 허용·거부의 범위. ACP 에는 이 칸이 없고 kind(allow_always)만으로는 세션/영구를 구분할 수 없다
+   *  (codex-acp 2.6.0: allow_for_session·accept_execpolicy_amendment 가 둘 다 allow_always).
+   *  그래서 드라이버가 kind 가 아니라 **optionId 를 프로바이더별 표**로 보고 채운다. 표에 없는 optionId 는 'unknown'.
+   *  Claude addRules(destination session) = 'session'.
+   *  Plenum 은 'once'·'session' 만 버튼으로 보이고, 'persistent'·'unknown' 은 숨긴다(고르는 요청이 오면 드라이버가 거부) */
+  scope: 'once' | 'session' | 'persistent' | 'unknown';
 }
 export type PermissionRequestEvent = Base & {
   type: 'requestPermission';
@@ -552,14 +558,16 @@ export type PermissionOutcome =
   | { outcome: 'selected'; optionId: string; message?: string }   // reject_* 에 이유 문구
   | { outcome: 'cancelled' };
 
-// ── 질문 카드 (ACP 에 없음 → ext). Claude AskUserQuestion, Codex request_user_input(있으면)
+// ── 질문 카드 (ACP elicitation/create, form 모드 — 스키마 1.7.0 에서 안정). Claude AskUserQuestion, Codex request_user_input
+//    Claude 직접 드라이버는 AskUserQuestion 을, ACP 드라이버는 elicitation form 을 이 모양으로 바꾼다
 export type QuestionEvent = Base & {
-  type: 'question'; ext: true;
+  type: 'elicitation';
+  mode: 'form';                               // ACP 의 url 모드는 지금 다루지 않음(오면 unknown)
   requestId: string;
   questions: { question: string; header?: string; multiSelect: boolean;
                options: { label: string; description?: string; recommended: boolean }[]; allowFreeText: boolean }[];
 };
-export type QuestionOutcome = { answers: Record<string, string> } | { outcome: 'cancelled' };
+export type QuestionOutcome = { action: 'accept'; answers: Record<string, string> } | { action: 'decline' } | { action: 'cancel' };  // ACP elicitation 응답 action 과 같은 이름
 
 // ── 사용량 (ACP 는 토큰 사용량만 다룸 → 한도 창은 ext)
 export interface LimitWindow { id: string; label: string; usedPct: number | null; resetsAt: number | null; status: 'ok' | 'warning' | 'rejected' | null }
@@ -615,7 +623,7 @@ export interface Capabilities {
   // 워커 조건: oneshot
   oneshot: boolean;          // 프롬프트 하나 → 끝 → 결과 텍스트
   questionCards: boolean; interrupt: boolean; usageWindows: boolean; tokenUsage: boolean;
-  allowForSession: boolean;  // allow_always(scope session)
+  allowForSession: boolean;  // scope 'session' 인 허용 옵션이 있음
   modelSelect: boolean; effortSelect: boolean; jsonOutput: boolean;
 }
 export type Role = 'main' | 'worker' | 'none';
@@ -643,7 +651,7 @@ export interface Driver {
 
 기능 감지(`detect`) 규칙:
 - 입력은 `--version` 과 `--help`(그리고 드라이버가 정한 하위 명령 help: codex 는 `exec --help`, `app-server --help`). 결과는 (명령 경로 + 버전) 키로 캐시한다(지금 `claudecaps.ts` 와 같은 방식).
-- 플래그가 있으면 켠다: 예 Claude `--effort` → `effortSelect`, `--permission-prompt-tool` → `permissionCards`, `--resume` → `resume`. oneshot(Codex) `exec --json` → `jsonOutput`, `exec resume` → `resume`.
+- 플래그가 있으면 켠다: 예 Claude `--effort` → `effortSelect`, `--permission-prompt-tool` → `permissionCards`, `--resume` → `resume`. `oneshot` 드라이버는 하네스마다 `--help` 에서 JSON 출력·이어하기 플래그를 찾는다(지금 등록 대상 없음).
 - ACP 드라이버는 `--help` 대신 `initialize` 응답의 `agentCapabilities`(`loadSession`, `promptCapabilities` …)와 `protocolVersion` 으로 정한다. `--version`·`--help` 는 어댑터·CLI 버전 기록과 drift 검사에만 쓴다.
 - 설정 파일의 `capabilities` 는 **상한**이다. 감지가 켜도 설정이 끄면 끈다. 감지가 못 찾으면 켜지 않고 경고를 낸다.
 - 최소 버전보다 낮거나, 알려진 최신 fixture 버전보다 **높으면** 경고("녹화 안 된 버전")만 내고 막지 않는다.
@@ -664,23 +672,31 @@ export interface Driver {
 ```
 app/test/fixtures/providers/
   claude/
-    2.1.248/            # 노트북 녹화
+    2.1.323/            # 지금 fixtures/stream/ 을 옮김 (녹화 6개)
       meta.json         # { provider, version, os, recordedAt(날짜만), command(argv, 경로 가림), scenes:[…] }
       help/claude.txt   # --help 전문
       01-cards.jsonl    # {"dir":"in"|"out"|"err"|"exit", "msg"|"text"}  (지금 stream/ 형식 그대로)
       01-cards.expect.json   # decode 결과 요약(이벤트 type 순서, 카드 수, unknown 0) — 계약 테스트가 비교
-    2.1.323/            # 지금 fixtures/stream/ 을 옮김
-  codex/
+    <노트북 버전>/      # 탐침이 2.1.248 이 아닌 버전을 만났을 때만 생김(녹화 4개 + compare.md).
+                        # 2.1.248 원본 녹화는 남아 있지 않다 — 2.1.248 이면 help 만 들어간다
+  codex/                # 경로 W1: codex exec --json (플러그인 워커가 씀)
     0.169.0/
-      help/{codex,exec,app-server,…}.txt
-      schema/           # app-server 가 생성하는 스키마 (CI 가 만드는 것과 같은 명령)
-      01-read.jsonl … 06-app-server.jsonl
-  _latest.json          # 프로바이더별 "녹화된 최신 버전" — 감지가 이보다 높으면 경고
+      help/{codex,codex.exec,codex.exec.resume,…}.txt
+      01-read.jsonl, 04-resume.jsonl
+  codex-app-server/     # 경로 W2 의 아래층: codex-acp 가 부르는 app-server 프로토콜
+    0.169.0/
+      schema/           # codex app-server generate-json-schema 출력 (CI 가 만드는 것과 같은 명령)
+      02-file-approval.jsonl, 03-shell-approval.jsonl, 05-interrupt.jsonl, 06-handshake.jsonl
+  codex-acp/            # 경로 W2: Plenum ↔ ACP 어댑터
+    2.6.0/
+      meta.json         # 어댑터가 묶은 codex 버전(package.json 의 @openai/codex) 기록
+      01-*.jsonl        # Plenum 가짜 클라이언트 ↔ codex-acp 녹화 (P5 에서 처음 생김)
+  _latest.json          # 경로별 "녹화된 최신 버전" — 감지가 이보다 높으면 경고
 ```
 
 - 지금 `app/test/fixtures/stream/` 은 `providers/claude/2.1.323/` 로 옮긴다(파일 이동만, 다음 단계 어댑터 단위에서).
 - 버전 폴더는 지우지 않는다. 옛 버전 해석이 계속 되는지가 하위 호환 검사다.
-- 개인 정보: 지금 `fixtures-privacy.test.ts` 가 `fixtures/` 아래를 재귀로 보므로 새 폴더도 자동으로 검사된다. Codex 녹화에서 추가로 가릴 것: `~/.codex` 경로, `account_id`·`chatgpt_account_id`·`user_id` 류 칸, 세션 파일 경로의 사용자 이름. 검사기에 해당 칸 이름 패턴을 추가한다(다음 단계).
+- 개인 정보: 지금 `fixtures-privacy.test.ts` 가 `fixtures/` 아래를 재귀로 보므로 새 폴더도 자동으로 검사된다. Codex 녹화에서 추가로 막을 것: `~/.codex` 경로, `account_id`·`chatgpt_account_id`·`user_id`·`installationId` 칸, `serverName`(컴퓨터 이름), 요금제 칸(`planType`·`plan_type`·`planName`·`limitName` 값이 `PLAN` 이 아니면 실패). 탐침이 저장 전에 이미 가리지만, 검사기가 한 번 더 막는다(P3).
 
 ### 계약 테스트
 
@@ -708,26 +724,37 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: node app/scripts/provider-drift.mjs --out drift/   # 아래
+      - run: node app/scripts/provider-drift.mjs --out drift/
       - uses: actions/upload-artifact@v4
         with: { name: drift-${{ matrix.os }}, path: drift/ }
 ```
 
-`provider-drift.mjs` 가 하는 일:
-1. 프로바이더 설정마다 `install.npm` 패키지의 `latest` 버전을 `npm view` 로 본다.
-2. `_latest.json` 보다 새 버전이면 임시 폴더에 그 버전을 설치(`npm i --prefix`), `--version`·`--help`·하위 명령 help·스키마 명령을 실행해 저장. **로그인·모델 호출 없음, 비밀 변수 없음.**
-3. 녹화된 최신 버전의 `help/`·`schema/` 와 비교:
-   - 플래그 비교는 글자 diff 가 아니라 **플래그 집합** 비교(설명 문구 변화는 무시). 드라이버가 쓰는 플래그(`driver.requiredFlags`)가 사라지면 **실패**, 그 밖의 추가·삭제는 요약만.
-   - 스키마는 메서드·알림 이름 집합과, 드라이버가 읽는 타입의 필드 집합 비교. 쓰는 필드가 사라지거나 타입이 바뀌면 **실패**.
-4. 실패 → 작업 실패(빨간 배지) + 요약 파일. 사람이 보고 탐침을 돌릴지 정한다. 성공해도 새 버전이 있으면 "녹화 필요" 요약을 남긴다.
+`provider-drift.mjs` 의 인자: `--out <폴더>`(결과), `--only <감시 항목 id>`(하나만), `--pin <항목>=<버전>`(최신 대신 그 버전 설치 — 로컬 재현용), `--baseline <폴더>`(비교 기준. 생략하면 `app/test/fixtures/providers/`). 종료 코드 0 = 깨지는 차이 없음, 1 = 드라이버가 쓰는 플래그·필드가 사라짐, 2 = 설치·실행 실패.
 
-구독 토큰을 CI 에 넣지 않는다. 실제 실행 녹화는 노트북 탐침(E절) 뿐이다.
+### H.4 감시 항목 — Codex 는 두 경로를 따로 본다
+
+| 항목 id | 경로 | 설치 | 받는 것 (로그인 없음) | 실패 조건 (`requiredFlags`·`requiredSchema`) | 녹화 기준 폴더 |
+|---|---|---|---|---|---|
+| `claude` | Plenum 메인 | `@anthropic-ai/claude-code` | `--version`, `--help` | `-p`, `--input-format`, `--output-format`, `--permission-prompt-tool`, `--resume`, `--permission-mode` 중 하나라도 사라짐 | `claude/<버전>/help/` |
+| `codex-exec` | **W1** 플러그인 워커 | `@openai/codex` | `codex exec --help`, `codex exec resume --help` | `--json`, `--sandbox`(값 `read-only`·`workspace-write`), `-o/--output-last-message`, `--skip-git-repo-check`, `-C`, `-m`, `-c` 중 하나라도 사라짐. 소스 이벤트 표(`thread.started`·`turn.completed`·`item.*`)는 CI 가 못 받으므로 녹화 계약 테스트가 맡음 | `codex/<버전>/help/` |
+| `codex-app-server` | **W2 아래층** | `@openai/codex`(codex-acp 가 묶은 버전과 최신 둘 다) | `codex app-server generate-json-schema` | 메서드 `thread/start`·`turn/start`·`turn/interrupt`·`thread/resume`, 서버 요청 `item/commandExecution/requestApproval`·`item/fileChange/requestApproval`·`item/tool/requestUserInput`, 결정 값 `accept`·`acceptForSession`·`decline`·`cancel`, `RateLimitWindow.{usedPercent,windowDurationMins,resetsAt}` 중 하나라도 사라짐 | `codex-app-server/<버전>/schema/` |
+| `codex-acp` | **W2** Plenum ↔ 어댑터 | `@agentclientprotocol/codex-acp` | `npm view` 의 버전·`dependencies["@openai/codex"]`, 패키지 안 `src/permissions/option-ids.ts` 의 optionId 목록 | Plenum 드라이버의 optionId → scope 표에 있는 id 가 사라지거나, 표에 없는 새 id 가 생김(새 id 는 경고: scope `unknown` 으로 숨겨지므로 안전하지만 알려야 함). 묶인 codex 버전이 바뀌면 `codex-app-server` 항목을 그 버전으로 한 번 더 | `codex-acp/<버전>/meta.json` |
+| `acp-schema` | W2 공통 | `@agentclientprotocol/sdk` | 패키지의 스키마 JSON | `session/request_permission`·`elicitation/create`·`session/cancel`·`session/load`, `PermissionOptionKind` 값 중 사라짐. 프로토콜 정수 버전이 1 이 아닌 것만 협상되면 실패 | `acp/<버전>/schema.json` |
+
+순서: 각 항목의 `latest` 를 `npm view` 로 보고 `_latest.json` 보다 새 버전이면 임시 폴더에 설치(`npm i --prefix`) → 위 "받는 것"을 저장 → 기준과 비교. 플래그는 글자 diff 가 아니라 **플래그 집합**, 스키마는 **메서드·타입 필드 집합**으로 비교한다(설명 문구 변화는 무시). 실패면 작업이 빨간 불, 성공해도 새 버전이 있으면 요약에 "녹화 필요 — 노트북 탐침"을 남긴다.
+
+구독 토큰을 CI 에 넣지 않는다(`secrets.` 참조 0). 실제 실행 녹화는 노트북 탐침(E절) 뿐이다. W1 의 이벤트 모양(`exec --json` 줄)과 W2 의 실제 왕복은 CI 로는 못 잡으므로, 새 버전이 보이면 탐침을 다시 돌리는 것이 사람 몫이다.
 
 ## I. 프로바이더 설정 형식
 
 한 프로바이더 = 파일 하나. 위치는 `<설정 폴더>/providers/<id>.yaml`(사용자 추가)과 앱에 딸린 `app/providers/<id>.yaml`(기본 제공). 같은 id 면 사용자 파일이 이긴다. 키는 하나씩 검증한다. 키 하나가 틀리면 그 키만 버리고 경고를 낸다. 파일 전체를 버리는 것은 `id`·`driver`·`command` 가 틀릴 때뿐이다.
 
 우선순위: 드라이버 기본값 → 설정 파일 → 기능 감지(상한은 설정 파일) → 실행할 때 화면에서 고른 값(모델·노력).
+
+드라이버 종류(처음 요구한 "claude / codex / acp / 단발 실행"과의 대응):
+- `claude-stream` = claude 직접(지금 코드).
+- `acp` = 범용 ACP. **Codex 는 별도 드라이버 없이 이것으로 붙는다**(공식 어댑터 codex-acp. F절 추천 (2)). 그래서 `codex` 드라이버 종류는 만들지 않는다.
+- `oneshot` = ACP 도 스트림 프로토콜도 없고 "프롬프트 하나 → 결과 텍스트"만 되는 하네스용(워커만 가능). 지금 등록할 대상은 없다. Codex 의 `codex exec` 단발 경로(W1)는 Plenum 이 아니라 플러그인 워커가 쓴다(D.1).
 
 ### 스키마 초안 (TypeScript 로 적은 모양. 파일은 YAML)
 
@@ -736,14 +763,14 @@ export interface ProviderConfig {
   schema: 1;                                  // 파일 형식 번호. 모르는 키는 무시하므로 키 추가로는 안 올린다
   id: string;                                 // [a-z0-9-]+, 파일 이름과 같음
   name: string;                               // 화면 이름
-  driver: 'claude-stream' | 'acp' | 'oneshot';   // 대화(메인)용 드라이버. 워커 단발 실행은 아래 worker 블록
+  driver: 'claude-stream' | 'acp' | 'oneshot';   // 메인·워커 둘 다 이 드라이버로 돈다. 워커 = 세션 하나 + 프롬프트 하나 + 결과 후 닫기
   command: {
     bin: string;                              // PATH 에서 찾을 이름 또는 절대 경로 (셸 없이 execFile)
     args?: string[];                          // 드라이버가 붙이는 인자 앞에 들어감 (예: acp 어댑터 ["--acp"])
     env?: Record<string, string>;             // 추가 환경 변수(비밀 금지)
     unsetEnv?: string[];                      // 지울 환경 변수 — API 키가 있으면 구독 대신 과금되는 하네스용
   };
-  install?: { npm?: string; url?: string };   // 설치 안내 + 예약 CI drift 검사 대상
+  install?: { npm?: string; role: 'cli' | 'adapter' | 'schema'; watch?: string }[];  // 설치 안내 + drift 검사 대상(H.4 의 항목 id 를 watch 에). 어댑터·CLI 를 따로 적는다
   minVersion?: string;
   models: {
     id: string;                               // 하네스에 넘기는 값
@@ -770,12 +797,11 @@ export interface ProviderConfig {
     stopBelowPct?: number;
   };
   worker?: {
-    /** 워커(단발) 실행. 생략하면 command 를 그대로 쓴다. 자리표시: {sandbox} {lastMessageFile} {model} {effort} */
-    bin?: string; args?: string[];
-    /** 승인을 앱으로 못 넘기는 단발 실행이면 샌드박스로 막는다 */
-    sandbox: 'read-only' | 'workspace-write';
+    /** 워커로 쓸 때의 설정. 같은 driver 로 세션 하나를 열고 프롬프트 하나를 보낸 뒤 결과를 받고 닫는다.
+     *  승인 요청이 오면 policy 대로 자동 답한다(사람에게 카드를 띄우지 않음) */
+    permission: 'reject-all' | 'allow-in-worktree';   // allow-in-worktree = 작업 폴더 안 파일 변경만 allow_once, 나머지 reject_once
+    worktree: boolean;                                 // true 면 전용 git worktree 에서 실행
     timeoutSec: number;
-    output: 'last-message' | 'json-events';
   };
   docs?: string[];                            // 근거 링크
 }
@@ -783,40 +809,41 @@ export interface ProviderConfig {
 
 ### 예시 1 — Codex
 
-대화(메인 후보)는 ACP(codex-acp 어댑터), 워커는 `codex exec` 단발. 한 파일에 둘 다 적는다.
+Plenum 에서는 메인 후보든 워커든 ACP(codex-acp 어댑터) 하나로 돈다(D.1 W2). 플러그인 워커가 쓰는 `codex exec`(W1)는 이 파일이 아니라 플러그인 쪽 설정이 맡는다.
 
 ```yaml
 schema: 1
 id: codex
 name: Codex
-driver: acp                       # F절 추천: Codex 대화는 공식 어댑터 경유
+driver: acp
 command:
   bin: npx                        # 또는 전역 설치한 codex-acp 절대 경로
   args: ["-y", "@agentclientprotocol/codex-acp@2.6.0"]   # 버전 고정 (drift CI 가 새 버전 알림)
   unsetEnv: [OPENAI_API_KEY, CODEX_API_KEY]               # 키가 있으면 구독이 아니라 API 과금
-install: { npm: "@openai/codex" } # drift 검사 대상: CLI 와 어댑터 둘 다
-minVersion: "0.169.0"             # 노트북 탐침 버전으로 확정 [확인 필요]
+install:
+  - { npm: "@agentclientprotocol/codex-acp", role: adapter, watch: codex-acp }
+  - { npm: "@openai/codex", role: cli, watch: codex-app-server }   # 어댑터가 묶은 버전과 최신 둘 다 검사
+minVersion: "2.6.0"               # 어댑터 버전. codex CLI 버전은 어댑터가 묶은 것을 따른다
 models:
   - { id: "<탐침의 model/list 결과>", efforts: ["<모델이 광고하는 값>"], default: true }  # 이름을 지어내지 않음
-modelArg: ["-m", "{model}"]
-effortArg: ["-c", "model_reasoning_effort={effort}"]
+# 모델·노력은 ACP session/set_config_option 으로 넘긴다(드라이버 기본값). modelArg/effortArg 불필요
 auth:
   check: { bin: codex, args: ["login", "status"], okPattern: "Logged in" }   # 출력 문구는 탐침 versions.json 으로 확정 [확인 필요]
   loginHint: "터미널에서 codex login (ChatGPT 계정)"
   billingGuard: { envPresent: [OPENAI_API_KEY, CODEX_API_KEY] }
 limits:
-  policy: hard-only               # 메인이 어렵다고 판단한 단위만 Codex 로
-  windows: []                     # ACP 경로엔 구조화된 창이 없음 (D.1). 필요하면 app-server rateLimits 확인 명령
+  policy: hard-only               # 메인이 어렵다고 판단한 단위만 Codex 워커로
+  windows: []                     # ACP 경로엔 구조화된 창이 없음 (D.1)
   stopBelowPct: 10
+capabilities:
+  questionCards: true             # elicitation form (codex-acp → request_user_input)
 worker:
-  bin: codex                      # 워커는 어댑터 없이 CLI 직접
-  args: ["exec", "--json", "--sandbox", "{sandbox}", "--skip-git-repo-check", "-o", "{lastMessageFile}"]
-  sandbox: workspace-write        # 구현 단위. 교차 리뷰는 read-only
+  permission: allow-in-worktree
+  worktree: true
   timeoutSec: 1800
-  output: last-message
 docs:
-  - https://developers.openai.com/codex/noninteractive
   - https://github.com/agentclientprotocol/codex-acp
+  - https://developers.openai.com/codex/app-server
 ```
 
 ### 예시 2 — 가상의 ACP 하네스 "acme"
@@ -831,13 +858,14 @@ driver: acp
 command:
   bin: acme
   args: ["acp"]                   # ACP 서버 모드로 띄우는 인자
-install: { npm: "acme-agent" }
+install:
+  - { npm: "acme-agent", role: cli, watch: acme }
 models:
   - { id: "ollama/qwen3:8b", label: "로컬 Qwen3 8B", default: true }
   - { id: "openrouter/some-free-model", label: "무료 클라우드" }
 modelArg: ["--model", "{model}"]
 capabilities:
-  questionCards: false            # ACP 에 질문 카드가 없음
+  questionCards: false            # 이 하네스는 elicitation 을 광고하지 않음(가정)
   usageWindows: false
 auth:
   check: { args: ["auth", "status"] }
@@ -845,12 +873,12 @@ auth:
 limits:
   policy: hard-only
 worker:
-  sandbox: read-only
+  permission: reject-all          # 리뷰 전용: 파일 변경 요청은 전부 거부
+  worktree: false
   timeoutSec: 900
-  output: last-message
 ```
 
-판정 예: Codex 대화(ACP) = `initialize` 에서 `loadSession: true` + 권한 요청 사용 → 메인 조건 충족(메인 가능). Codex 워커(`codex exec`) = oneshot → 워커. acme = `loadSession: false` 면 메인 불가, `worker` 블록이 있으면 워커만.
+판정 예: Codex(ACP) = `initialize` 에서 `loadSession: true` + 권한 요청 사용 → 메인 조건 충족(메인 가능), `worker` 블록이 있으니 워커도 가능. acme = `loadSession: false` 면 메인 불가, 워커만.
 
 ## J. 하네스 조사
 
@@ -966,20 +994,21 @@ Claude 메인과 Codex 워커가 같은 지침을 쓰려면 AGENTS.md 하나를 
 
 ## 결정이 필요한 것
 
-| # | 결정 | 선택지 | 추천 | 근거 절 |
-|---|---|---|---|---|
-| 1 | 드라이버 구조 | (1) 전부 ACP / (2) Claude 직접 + 범용 ACP / (3) 직접만 | **(2)** — Claude "이 세션 동안 허용"·한도 창을 지키고, 나머지는 공식 어댑터가 형식 변화를 흡수 | F.5–F.6 |
-| 2 | jh-kit 안 Codex 워커 경로 | `codex exec` 단발(샌드박스 + worktree) / Plenum 경유 ACP | **`codex exec` 단발** — Claude 세션 안에서 Bash 로 끝나고 Plenum 이 꺼져 있어도 된다. 승인 대신 샌드박스 | D.1 |
-| 3 | Codex 워커 샌드박스 기본값 | 구현 `workspace-write` + 전용 worktree / 리뷰 `read-only` / 둘 다 `read-only` | 구현 = workspace-write + worktree, 리뷰 = read-only | C.3, D.1 |
-| 4 | 인증 처리 | 각 CLI 자체 로그인만 / Plenum 이 토큰 주입 / API 키 선택지 | **자체 로그인만**(+ API 키 경로는 넣지 않음: 과금 금지 규칙) | A.2–A.3 |
-| 5 | 서드파티 래핑 애매함 | 그대로 공개 / README 고지 추가 / Anthropic 에 문의 후 공개 | README 고지 추가. 공개 배포(4단계) 전에 문의 여부를 다시 정함 | A.1 ③ |
-| 6 | OpenAI 약관 원문 확인 | 브라우저로 사람이 확인 / 확인 없이 진행 | **사람이 확인** — 이 환경에서 openai.com 정책 페이지가 403 이라 못 읽음 | A.4 |
-| 7 | ChatGPT 구독 유지 | 유지 / Codex 워커 실험 기간만 / 해지 | 사람이 정함. 탐침 ⑥의 한도 값(primary/secondary 창)과 실제 워커 몇 회 결과를 보고 정하는 것을 추천 | C.5 |
-| 8 | 데모 두 번째 프로바이더 | 클라우드 C1 OpenCode + 무료 모델 / C2 OpenRouter `:free` / 로컬 L1 OpenCode + Ollama qwen3:8b / L2 qwen2.5-coder:7b | **OpenCode 하나로 C1 + L1** — 같은 하네스·같은 ACP 드라이버에서 모델 설정만 바꿔 "새 모델 = 설정 파일 하나"를 보여 줌. C1 의 카드·로그인 필요 여부는 미확인 → 가입 단계에서 카드 요구가 나오면 L1 만 | J.4 |
-| 9 | 탐침 스크립트 보관 | 레포에 커밋(`docs/research/probe/`) / zip 만(커밋 안 함) | 이번엔 zip 만(지시대로). 다음 단계 drift 작업에서 녹화 도구를 `app/scripts/` 로 정식 편입할지 정함 | E |
-| 10 | 노트북 claude 버전이 2.1.248 이 아닐 때 | 재녹화 + 비교(탐침이 자동) / 업데이트 보류 | 탐침 자동(지시대로). 결과 `compare.md` 의 사라진 키가 있으면 다음 단계 첫 일로 | E, H |
-| 11 | codex-acp 의 묶인 codex 버전 지연(0.166.x 고정, CLI 는 0.169.0) | 어댑터 기본 사본 사용 / 설치된 codex 경로를 넘김 | 어댑터 기본 사본(어댑터가 검증한 조합). 새 모델이 꼭 필요할 때만 경로 지정 | F.3 |
-| 12 | 프로바이더 설정 파일 위치 | 앱 설정 폴더 / kit 레포 / 둘 다(앱 기본 + 사용자) | 둘 다: 앱에 딸린 기본 파일 + 사용자 설정 폴더가 덮어씀. jh-kit 의 `providers.yaml` 은 워커가 쓸 실행기 목록으로 따로 둠(같은 id 사용) | I |
+번호는 처음 판 그대로다(7번은 개인 사정이라 이 공개 문서에서 뺐다).
+
+| # | 결정 | 선택지 | 추천 | 상태 | 근거 절 |
+|---|---|---|---|---|---|
+| 1 | 드라이버 구조 | (1) 전부 ACP / (2) Claude 직접 + 범용 ACP / (3) 직접만 | (2) | **정함: (2)** (2026-11-16) | F.5–F.6 |
+| 2 | 플러그인 안 Codex 워커 경로 | `codex exec` 단발(샌드박스 + worktree) / Plenum 경유 ACP | `codex exec` 단발 — Claude 세션 안에서 셸로 끝나고 Plenum 이 꺼져 있어도 된다 | 미정 | D.1 |
+| 3 | Codex 워커 샌드박스 기본값 | 구현 `workspace-write` + 전용 worktree / 리뷰 `read-only` / 둘 다 `read-only` | 구현 = workspace-write + worktree, 리뷰 = read-only | 미정 | C.3, D.1 |
+| 4 | 인증 처리 | 각 CLI 자체 로그인만 / Plenum 이 토큰 주입 / API 키 선택지 | 자체 로그인만(API 키 경로는 넣지 않음: 과금 금지) | 미정 | A.2–A.3 |
+| 5 | 서드파티 래핑 애매함 | 그대로 공개 / README 고지 추가 / Anthropic·OpenAI 에 문의 후 공개 | README 고지 추가("각자 약관 확인, 자동화는 API 키 권장"). 공개 배포 전에 문의 여부를 다시 정함 | 미정 | A.1–A.3 |
+| 6 | OpenAI 약관 원문 확인 | 브라우저로 사람이 확인 / 확인 없이 진행 | 사람이 확인 | **정함: 확인함** — 2(c)(iv), 결론 회색 지대 (2026-11-16) | A.1–A.2 |
+| 8 | 데모 두 번째 프로바이더 | C1 OpenCode + 무료 모델 / C2 OpenRouter `:free` / L1 OpenCode + Ollama qwen3:8b / L2 qwen2.5-coder:7b | OpenCode 하나로 C1 + L1 | **정함: OpenCode — 클라우드 무료 모델 + Ollama qwen3:8b(VRAM 8GB)** (2026-11-16). 가입 때 카드 요구가 나오면 L1 만 | J.4 |
+| 9 | 탐침 스크립트 보관 | 레포에 커밋 / zip 만 | 이번엔 zip 만. P3 에서 녹화 도구를 `app/scripts/` 로 정식 편입할지 정함 | 미정 | E |
+| 10 | 노트북 claude 가 2.1.248 이 아닐 때 | 재녹화 + 비교(탐침 자동) / 업데이트 보류 | 탐침 자동. `compare.md` 에 사라진 키가 있으면 다음 단계 첫 일로 | 미정 | E, H |
+| 11 | codex-acp 가 묶은 codex 버전 지연(0.166.x, CLI 최신 0.169.0) | 어댑터 기본 사본 / 설치된 codex 경로를 넘김 | 어댑터 기본 사본. 새 모델이 꼭 필요할 때만 경로 지정 | 미정 | F.3, H.4 |
+| 12 | 프로바이더 설정 파일 위치 | 앱 설정 폴더 / 앱 기본 + 사용자 덮어쓰기 | 앱 기본 파일 + 사용자 설정 폴더가 덮어씀. 플러그인 쪽 실행기 목록은 따로 두고 같은 id 사용 | 미정 | I |
 
 ## 다음 단계 작업 단위 (Plenum)
 
@@ -1003,27 +1032,30 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - `--effort` 없는 가짜 claude 로 `effortSelect: false`(기존 테스트 통과)
 
 ### P3. 형식 변화 감지 CI
-- 바꿀 파일: `.github/workflows/provider-drift.yml`(새, H절), `app/scripts/provider-drift.mjs`(새), `app/test/fixtures/providers/_latest.json`(새), `app/test/fixtures-privacy.test.ts`(Codex 칸 이름 패턴 추가: `account_id`·`chatgpt_account_id`·`user_id`, `~/.codex` 경로)
-- 목표: 매주 토큰 없이 새 CLI 버전의 help·스키마를 녹화본과 비교해, 드라이버가 쓰는 플래그·필드가 사라지면 빨간 불
+- 바꿀 파일: `.github/workflows/provider-drift.yml`(새, H절), `app/scripts/provider-drift.mjs`(새), `app/test/fixtures/providers/_latest.json`(새), 기준 자료 `app/test/fixtures/providers/codex/0.169.0/help/`·`codex-app-server/0.169.0/schema/`(이 조사에서 로그인 없이 받은 help·스키마. 스키마는 전체 4.7MB 대신 드라이버가 쓰는 메서드·타입만 뽑은 요약 JSON — 탐침 결과가 오면 P4 에서 노트북 버전 폴더 추가), `app/test/fixtures-privacy.test.ts`(Codex 패턴 추가: `account_id`·`chatgpt_account_id`·`user_id`·`installationId` 칸, `serverName`, `~/.codex` 경로, 요금제 칸 `planType`·`plan_type`·`planName`·`limitName` 의 값이 `PLAN` 이 아니면 실패)
+- 목표: 매주 토큰 없이 H.4 의 감시 항목 5개(`claude`, `codex-exec`(W1), `codex-app-server`·`codex-acp`(W2), `acp-schema`)를 각각 녹화본과 비교해, 드라이버가 쓰는 플래그·필드·optionId 가 사라지면 빨간 불
 - 완료 기준:
-  - 로컬: `node app/scripts/provider-drift.mjs --out /tmp/drift --version-override codex=0.169.0` 이 help·스키마를 받고 "차이 없음" 요약
-  - 일부러 기준 help 에서 `--json` 을 지운 사본으로 돌리면 종료 코드 1 + "requiredFlags 사라짐: --json"
+  - 로컬: `node app/scripts/provider-drift.mjs --out /tmp/drift --only codex-exec --pin codex-exec=0.169.0` → 종료 코드 0, 요약 "차이 없음"
+  - `cd app && npx vitest run test/drift.test.ts`(새) — 기준 help 에는 `--json` 이 있고 새 help 에는 없는 문자열 쌍을 `diffFlags` 에 넣으면 `requiredMissing: ['--json']` 이고 스크립트 종료 코드가 1. 설명 문구만 바뀐 쌍은 차이 0
+  - 같은 테스트 파일 — codex-acp optionId 표에서 `allow_for_session` 이 사라지면 실패, 새 id 가 생기면 경고
   - GitHub Actions `workflow_dispatch` 1회 실행 성공(ubuntu·windows), 비밀 변수 참조 0(`grep -n secrets .github/workflows/provider-drift.yml` 비어 있음)
 
 ### P4. Codex 녹화 fixture 넣기 (탐침 결과)
-- 바꿀 파일: `app/test/fixtures/providers/codex/<노트북 버전>/`(탐침 zip 에서 가린 녹화·help·스키마), `.../expect.json`, (claude 버전이 달랐다면) `app/test/fixtures/providers/claude/<버전>/`
+- 바꿀 파일: `app/test/fixtures/providers/codex/<노트북 버전>/`(W1 녹화 ①④·help), `app/test/fixtures/providers/codex-app-server/<노트북 버전>/`(②③⑤⑥·스키마), `.../expect.json`, (claude 버전이 달랐다면) `app/test/fixtures/providers/claude/<버전>/`
 - 목표: Codex 실제 출력이 계약 테스트의 입력이 된다
 - 완료 기준:
-  - `cd app && npx vitest run test/fixtures-privacy.test.ts` 통과(`PLENUM_PRIVATE_WORDS` 를 노트북 값으로 넣고 한 번 더)
+  - `cd app && npx vitest run test/fixtures-privacy.test.ts` 통과(`PLENUM_PRIVATE_WORDS` 를 노트북 값으로 넣고 한 번 더). P3 의 요금제 칸 검사가 들어간 뒤라야 한다
   - 탐침 `redaction-report.txt` 가 "남은 것 없음"
+  - `grep -rn '"planType":"[^P]' app/test/fixtures/providers` 출력 없음
   - (P5 전에는) 계약 테스트가 codex 폴더를 "드라이버 없음 — 건너뜀" 으로 표시하고 실패하지 않음
 
 ### P5. 범용 ACP 드라이버 + Codex 연결
 - 바꿀 파일: `app/server/provider/acp.ts`(새: initialize·session/new·load·prompt·update·request_permission·elicitation·cancel, v1 만), `app/providers/codex.yaml`(I절 예시 1), `app/server/chat.ts`(드라이버 선택), `app/test/fakeacp.ts`(새: 가짜 ACP 에이전트), `app/test/acp.test.ts`(새)
-- 목표: Codex 를 Plenum 안 채팅으로 띄워 승인 카드·질문 카드·이어하기·중단이 된다(메인 조건 판정 실측). 모르는 `session/update` 종류는 원문 줄로 보이고 대화는 계속된다
+- 목표: Codex 를 Plenum 안 채팅으로 띄워 승인 카드·질문 카드·이어하기·중단이 된다(메인 조건 판정 실측). Plenum 이 Codex 를 워커로 쓸 때도 같은 드라이버(I절 `worker` 블록). 모르는 `session/update` 종류는 원문 줄로 보이고 대화는 계속된다
 - 완료 기준:
-  - `cd app && npx vitest run test/acp.test.ts` — 가짜 ACP 에이전트로 카드 4종(allow_once, allow_always=session, reject, elicitation) 왕복, 모르는 update 1개 → `unknown` + 로그 파일 1줄, 앱 계속
-  - 노트북: Codex 채팅에서 파일 쓰기 승인 카드 → "이 세션 동안 허용" → 같은 명령이 다시 안 물음 (사람이 확인)
+  - `cd app && npx vitest run test/acp.test.ts` — 가짜 ACP 에이전트로: optionId `allow_once`·`allow_for_session`·`decline` 버튼 3개가 보이고, 같은 kind `allow_always` 인 `accept_execpolicy_amendment`·`apply_network_policy_amendment:0` 은 **숨겨짐**(scope persistent), 표에 없는 optionId 는 숨겨지고 경고 1줄, elicitation form 왕복(`action: accept` + answers), 모르는 update 1개 → `unknown` + 로그 파일 1줄, 앱 계속
+  - 노트북: Codex 채팅에서 셸 명령 승인 카드 → "이 세션 동안 허용" → **같은 명령**이 다시 안 물음, 다른 명령은 물음 (사람이 확인)
+  - 노트북: 파일 쓰기 승인 카드 → "이 세션 동안 허용" → **같은 파일** 다시 쓰기는 안 물음(파일 변경 `acceptForSession` 은 파일 단위 — 스키마 설명) (사람이 확인)
   - 노트북: 이어하기로 앞 대화 기억
 
 ### P6. UI — 프로바이더·모델 선택, 역할 표시
