@@ -11,7 +11,7 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const PASS_KEYS = ['name', 'description', 'tools', 'model', 'effort', 'maxTurns', 'isolation'];
 const KIT_ONLY_KEYS = ['provider', 'label', 'memo', 'stage', 'summary'];
 // 그대로 복사하지 않는 kit 최상위 항목
-const RESERVED = new Set(['kit.yaml', 'providers.yaml', 'rules.md', 'prose-ignore.yaml', 'workers', 'modes', 'tables']);
+const RESERVED = new Set(['kit.yaml', 'providers.yaml', 'rules.md', 'prose-ignore.yaml', 'workers', 'modes', 'tables', 'variants']);
 
 const byCode = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const displayModel = (m) => m.charAt(0).toUpperCase() + m.slice(1);
@@ -113,6 +113,24 @@ function loadDir(kitDir, kind) {
   return map;
 }
 
+// kit/variants/<이름>.yaml: 판 목록. 폴더가 없으면 null. 내용은 읽지 않는다 (variant.js가 읽는다)
+const VARIANT_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
+function loadVariantList(dir) {
+  const vdir = path.join(dir, 'variants');
+  if (!fs.existsSync(vdir)) return null;
+  if (!fs.statSync(vdir).isDirectory()) throw new KitError('variants가 폴더가 아님');
+  const map = new Map();
+  for (const f of fs.readdirSync(vdir).sort(byCode)) {
+    const abs = path.join(vdir, f);
+    // .yaml 파일이 아닌 것(메모, 폴더)과 점으로 시작하는 것(.DS_Store 등)은 건너뛴다. modes/·tables/와 같은 규칙
+    if (f.startsWith('.') || !f.endsWith('.yaml') || !fs.statSync(abs).isFile()) continue;
+    const name = f.slice(0, -'.yaml'.length);
+    if (!VARIANT_NAME_RE.test(name)) throw new KitError(`variants/${f}: 판 이름은 ${VARIANT_NAME_RE} 꼴이어야 함`);
+    map.set(name, { name, file: abs, where: `variants/${f}` });
+  }
+  return map;
+}
+
 // kit/prose-ignore.yaml: 산문 경고 예외. ignore: [{file, line_contains | pattern, reason}]
 function loadProseIgnore(dir) {
   const file = path.join(dir, 'prose-ignore.yaml');
@@ -161,7 +179,8 @@ function loadKit(kitDir) {
   return {
     dir, meta, providers, workers, modes: loadDir(dir, 'modes'), tables: loadDir(dir, 'tables'), files,
     proseIgnore: loadProseIgnore(dir),
+    variants: loadVariantList(dir),
   };
 }
 
-module.exports = { KitError, loadKit, splitFrontmatter, EFFORTS, PASS_KEYS, KIT_ONLY_KEYS, byCode, displayModel, tierOf };
+module.exports = { KitError, loadKit, readYaml, splitFrontmatter, EFFORTS, PASS_KEYS, KIT_ONLY_KEYS, byCode, displayModel, tierOf };
