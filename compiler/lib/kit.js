@@ -122,9 +122,8 @@ function loadVariantList(dir) {
   const map = new Map();
   for (const f of fs.readdirSync(vdir).sort(byCode)) {
     const abs = path.join(vdir, f);
-    if (!f.endsWith('.yaml') || !fs.statSync(abs).isFile()) {
-      throw new KitError(`variants/${f}: variants/ 안에는 <이름>.yaml 파일만 둔다`);
-    }
+    // .yaml 파일이 아닌 것(메모, 폴더)과 점으로 시작하는 것(.DS_Store 등)은 건너뛴다. modes/·tables/와 같은 규칙
+    if (f.startsWith('.') || !f.endsWith('.yaml') || !fs.statSync(abs).isFile()) continue;
     const name = f.slice(0, -'.yaml'.length);
     if (!VARIANT_NAME_RE.test(name)) throw new KitError(`variants/${f}: 판 이름은 ${VARIANT_NAME_RE} 꼴이어야 함`);
     map.set(name, { name, file: abs, where: `variants/${f}` });

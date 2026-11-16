@@ -153,6 +153,24 @@ test('기본 판: variants/는 있는데 demo-kit.yaml이 없으면 ERROR', () =
   assert.ok(!fs.existsSync(path.join(c.dir, 'dist')));
 });
 
+test('variants/의 .yaml 아닌 파일·점 파일·폴더는 건너뛴다 (build·pack 둘 다 성공, 판 목록에 안 들어감)', () => {
+  const c = kitCase({ variants: { 'demo-kit': 'harness: claude-code\nexclude:\n  skills: [extra]\n' } });
+  const vdir = path.join(c.kit, 'variants');
+  fs.writeFileSync(path.join(vdir, 'notes.txt'), '메모');
+  fs.writeFileSync(path.join(vdir, '.DS_Store'), '');
+  fs.writeFileSync(path.join(vdir, '.hidden.yaml'), 'harness: agents-md\n');
+  fs.mkdirSync(path.join(vdir, 'drafts.yaml'));
+  const b = compile([], { cwd: c.dir });
+  assert.strictEqual(b.status, 0, b.stderr);
+  const r = packOk([], { cwd: c.dir });
+  assert.match(r.stdout, /\(13 files\)\s*$/);
+  assert.ok(!r.stderr.includes('ERROR'), r.stderr);
+  for (const name of ['notes', '.hidden', 'drafts']) {
+    const e = pack(['--variant', name], { cwd: c.dir });
+    assert.strictEqual(e.status, 1, name);
+    assert.match(e.stderr, /없는 판: .* \(있는 것: demo-kit\)/, name);
+  }
+});
 test('--variant <이름>은 kit/variants/<이름>.yaml을 쓴다', () => {
   const c = kitCase({ variants: { 'demo-kit': 'harness: claude-code\n', share: 'harness: claude-code\nexclude:\n  agents: [rev]\n' } });
   const out = path.join(c.dir, 's.zip');
@@ -435,10 +453,6 @@ const ERRORS = [
   ['--build와 --variant 같이', { args: (c) => ['--build', c.dir, '--variant', 'demo-kit'], noKit: true }, /--build는 --kit·--variant·--variant-file과 같이 쓸 수 없다/],
   ['없는 판 이름', { args: () => ['--variant', 'nope'], variants: { 'demo-kit': 'harness: claude-code\n' } }, /없는 판: nope \(있는 것: demo-kit\)/],
   ['--variant인데 variants/ 없음', { args: () => ['--variant', 'demo-kit'] }, /판 demo-kit: kit에 variants\/ 폴더가 없음/],
-  ['variants/에 yaml 아닌 파일', {
-    args: () => [], variants: { 'demo-kit': 'harness: claude-code\n' },
-    prep: (c) => fs.writeFileSync(path.join(c.kit, 'variants', 'notes.txt'), ''),
-  }, /variants\/notes\.txt: variants\/ 안에는 <이름>\.yaml 파일만 둔다/],
   ['판 이름 꼴', { args: () => [], variants: { 'demo-kit': 'harness: claude-code\n', Big: 'harness: claude-code\n' } }, /variants\/Big\.yaml: 판 이름은/],
   ['--variant 값 없음', { args: () => ['--variant'], last: true }, /알 수 없는 인자: --variant\n쓰는 법: plenum-pack /],
 ];
@@ -466,7 +480,7 @@ for (const [label, sc, re] of ERRORS) {
 }
 
 test('ERROR 장면 개수 확인 (표가 비면 위 반복이 0번 돈다)', () => {
-  assert.strictEqual(ERRORS.length, 38);
+  assert.strictEqual(ERRORS.length, 37);
 });
 
 test('ERROR: 판 형식 오류 메시지는 넘겨받은 판 경로로 시작한다', () => {
