@@ -685,21 +685,32 @@ export interface Driver {
 - 설정 파일의 `capabilities` 는 **상한**이다. 감지가 켜도 설정이 끄면 끈다. 감지가 못 찾으면 켜지 않고 경고를 낸다.
 - 최소 버전보다 낮거나, 알려진 최신 fixture 버전보다 **높으면** 경고("녹화 안 된 버전")만 내고 막지 않는다.
 
-### G.1 P1에서 더한 칸 (동작 보존용)
+### G.1 P1에서 더한 칸·바뀐 점 (동작 보존용)
 
-| 칸 | 타입 | 왜 |
-|---|---|---|
-| `MessageEvent.index?` | `number` | text-delta 의 content block index |
-| `SessionStartedEvent.version`, `permissionMode` | `string \| null` | init 이벤트가 화면에 그대로 냄 |
-| `TurnEndEvent.rawSubtype`, `isError` | `string`, `boolean` | result 이벤트가 하네스 subtype 원문을 화면에 냄 |
-| `UsageEvent.rejected?` | `{ window: string; resetsAt: number \| null }` | 한도 막기 규칙(창 이름 정렬 후 첫 rejected, 없으면 최상위 status·rateLimitType) |
-| `PermissionRequestEvent.ext?` | `{ claude: { sessionRules: { toolName; ruleContent? }[]; toolUseId?: string } }` | "이 세션 동안 허용"은 addRules 만 destination session 으로 보냄 |
-| `UnknownEvent.reply?` | `unknown` | 답을 기다리는 모르는 요청에 드라이버가 만든 기본 거부 원문 |
-| `UnknownEvent.requestId?` | `string` | 그 요청의 id(안내 카드에 씀) |
-| `SessionStartedEvent.noSessionId?` | `true` | init 에 session_id 가 없을 때. 빈 문자열과 구분해 이전 세션 id 를 유지 |
-| `LimitWindow.rawStatus?` | `string \| null` | 하네스 status 원문(`status` 는 ok·warning·rejected 로 좁힘). 화면의 창 status 는 원문 |
-| `QuestionEvent.ext?` | `{ claude: { toolUseId?: string } }` | 질문 카드의 toolUseId |
-| `Driver.initialize()`, `Driver.prompt(text)` | `() => unknown`, `(text: string) => unknown` | 핸드셰이크·사용자 글의 원문 만들기 |
+위 G절 초안과 실제 `app/server/provider/events.ts` 가 다른 점. 필수 = `?` 없는 칸(드라이버가 늘 채운다), 선택 = `?` 칸(없으면 안 붙인다).
+
+| 칸 | 필수/선택 | 타입 | 왜 |
+|---|---|---|---|
+| `SessionStartedEvent.version`, `permissionMode` | 필수 | `string \| null` | init 이벤트가 화면에 그대로 냄 |
+| `TurnEndEvent.rawSubtype`, `isError` | 필수 | `string`, `boolean` | result 이벤트가 하네스 subtype 원문을 화면에 냄(채팅 매니저는 `stopReason` 이 아니라 이 원문을 쓴다) |
+| `MessageEvent.index?` | 선택 | `number` | text-delta 의 content block index |
+| `ToolCallEvent.toolNameNotString?` | 선택 | `true` | 원래 `name` 이 문자열이 아니었음(`toolName` 은 `String(...)` 값). Skill 모드 감지는 원래 값이 문자열 `'Skill'` 일 때만 |
+| `UsageEvent.rejected?` | 선택 | `{ window: string; resetsAt: number \| null } \| null` | 한도 막기 규칙(창 이름 정렬 후 첫 rejected, 없으면 최상위 status·rateLimitType) |
+| `LimitWindow.rawStatus?` | 선택 | `string \| null` | 하네스 status 원문(`status` 는 ok·warning·rejected 로 좁힘). 화면의 창 status 는 원문 |
+| `PermissionRequestEvent.ext?` | 선택 | `{ claude: { sessionRules: { toolName; ruleContent? }[]; toolUseId?: string } }` | "이 세션 동안 허용"은 addRules 만 destination session 으로 보냄 |
+| `QuestionEvent.ext?` | 선택 | `{ claude: { toolUseId?: string } }` | 질문 카드의 toolUseId |
+| `SessionStartedEvent.noSessionId?` | 선택 | `true` | init 에 session_id 가 없을 때. 빈 문자열과 구분해 이전 세션 id 를 유지 |
+| `UnknownEvent.reply?` | 선택 | `unknown` | 답을 기다리는 요청에 드라이버가 만든 기본 거부 원문(`answeredWithDefault: true` 일 때) |
+| `UnknownEvent.requestId?` | 선택 | `string` | 그 요청의 id(안내 카드에 씀) |
+| `UnknownEvent.thrown?` | 선택 | `true` | decode 가 그 줄에서 예외를 잡았음(`reason: 'field'`). 그 줄이 `request_id` 문자열인 `control_request` 면 `reply`·`requestId`·`answeredWithDefault: true` 도 붙여 거부로 답한다(claude 가 기다리지 않게) |
+| `driver.stats()` | 드라이버(Claude) | `() => { thrown: number }` | decode 가 안에서 잡은 예외 수. 계약 테스트 (b) 가 fixture 전체 뒤 0 인지 본다 |
+| `Driver.initialize()`, `Driver.prompt(text)` | 필수 | `() => unknown`, `(text: string) => unknown` | 핸드셰이크·사용자 글의 원문 만들기 |
+| `Driver.detect?` | 선택으로 바뀜 | — | 기능 감지는 P2 에서 구현. P1 드라이버에는 없다 |
+
+그 밖의 규칙:
+- `raw`: 초안은 "모든 이벤트가 raw 를 들고 다닌다"였지만, P1 은 **unknown 에만** 붙인다(필수). 다른 이벤트의 `Base.raw?` 는 비워 둔다.
+- `seq`·`at`: 드라이버는 0 으로 둔다. 채팅 매니저(`chat.ts` emit)가 ChatEvent 로 바꿀 때 붙인다.
+- `stopReason` `cancelled`(Claude): 이번 턴에 드라이버가 `interrupt()` 원문을 만든 뒤 오는 result 가 `error_during_execution` 이면 `cancelled`. result 를 받으면 그 표시를 내린다(턴 경계). 표시 없이 온 `error_during_execution` 은 `error`.
 
 P1에서 unknown 이벤트는 만들되 화면·로그에는 아직 보내지 않는다(로그 파일은 P5).
 
@@ -723,7 +734,7 @@ app/test/fixtures/providers/
       meta.json         # { provider, version, os, recordedAt(날짜만), command(argv, 경로 가림), scenes:[…] }
       help/claude.txt   # --help 전문
       01-cards.jsonl    # {"dir":"in"|"out"|"err"|"exit", "msg"|"text"}  (지금 stream/ 형식 그대로)
-      01-cards.expect.json   # decode 결과 요약(이벤트 type 순서, 카드 수, unknown 0) — 계약 테스트가 비교
+      01-cards.expect.json   # decode 결과 요약(이벤트 type 순서, 카드 수, stopReason, 창, unknown 수) — 계약 테스트가 비교(unknown 수는 래칫)
       *.golden.json     # 리팩터 전 chat.ts 의 ChatEvent·stdin 덤프 — P1 계약 기준
     <노트북 버전>/      # 탐침이 2.1.248 이 아닌 버전을 만났을 때만 생김(녹화 4개 + compare.md).
                         # 2.1.248 원본 녹화는 남아 있지 않다 — 2.1.248 이면 help 만 들어간다
@@ -753,8 +764,8 @@ app/test/fixtures/providers/
 
 `app/test/contract.test.ts`(다음 단계) — fixture 폴더마다:
 1. 녹화 파일이 **1개 이상**이다(0개면 실패 — 조용히 통과 방지).
-2. `out` 줄을 순서대로 `driver.decode` 에 넣는다. **throw 0**.
-3. `unknown` 이 `expect.json` 에 적은 수를 넘지 않는다(새 이벤트를 발견하면 수를 올리는 게 아니라 매핑을 추가하고 기대값을 고친다).
+2. `out` 줄을 순서대로 `driver.decode` 에 넣는다. **예외 0** — decode 는 예외를 안에서 잡아 unknown 으로 바꾸므로 밖으로 나온 throw 가 아니라 드라이버의 예외 카운터(`stats().thrown`)와 unknown 의 `thrown` 표시가 0 인지 본다.
+3. 장면별 `unknown` 수는 `expect.json` 값을 넘으면 실패(래칫). 같거나 줄면 통과하고, 줄었으면 "expect 갱신 가능" 경고를 낸다. 2.1.323 녹화 기준 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)는 기준으로 두고, 매핑으로 줄이는 일은 P5 몫. 나머지 요약 칸은 정확히 비교한다(type 순서는 `unknown` 을 뺀 순서).
 4. 장면별 핵심 단언: 승인 카드 수, scope `session` 인 허용 옵션 유무(kind 가 아니라 D.4 표로 판정), 질문 카드 수, `turnEnd.stopReason`, 사용량 창 이름.
 5. `in` 줄 재생: 앱이 그 시점에 보낼 답(`answerPermission` 등)을 만들어 녹화된 `in` 과 **모양**(키 집합·타입)이 같은지 비교한다. 이게 "우리가 보낸 답을 그 버전 CLI 가 받았다"의 근거다.
 6. 매핑 표 도달 계측: 드라이버의 매핑 분기마다 카운터를 두고, fixture 전체를 돌린 뒤 한 번도 안 닿은 분기 목록을 출력한다(실패는 아님, 목록이 길어지면 녹화가 부족하다는 신호).
@@ -1091,7 +1102,7 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
 - 목표: 화면·SSE·API 모양은 한 글자도 안 바뀌고, Claude 해석이 드라이버 하나로 모인다. 모르는 이벤트는 `unknown` 으로 남고 throw 하지 않는다
 - 완료 기준:
   - `cd app && npm test` 전부 통과(0.3.0 의 276개 + 새 계약 테스트), `npm run typecheck` 0 오류
-  - `cd app && npx vitest run test/contract.test.ts` — fixture 폴더 ≥1, 모든 `out` 줄 decode throw 0, `unknown` 수 = `expect.json` 값
+  - `cd app && npx vitest run test/contract.test.ts` — fixture 폴더 ≥1, 모든 `out` 줄 decode 예외 0(`stats().thrown`), 장면별 `unknown` 수는 `expect.json` 값을 넘으면 실패(래칫). 2.1.323 녹화 기준 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)는 기준으로 두고, 매핑으로 줄이는 일은 P5 몫
   - `cd app && npm run e2e` 9+19 흐름 통과(지금과 같음)
   - `git diff main -- app/web/` 비어 있음(화면 코드 안 바뀜)
   - 기준 덤프(`*.golden.json`)와 재생 결과 완전 일치
@@ -1148,6 +1159,7 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - 노트북: Codex 채팅에서 셸 명령 승인 카드 → "이 세션 동안 허용" → **같은 명령**이 다시 안 물음, 다른 명령은 물음 (사람이 확인)
   - 노트북: 파일 쓰기 승인 카드 → "이 세션 동안 허용" → **같은 파일** 다시 쓰기는 안 물음(파일 변경 `acceptForSession` 은 파일 단위 — 스키마 설명) (사람이 확인)
   - 노트북: 이어하기로 앞 대화 기억
+  - Claude 계약 테스트의 unknown 래칫: 2.1.323 녹화의 unknown 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)를 매핑으로 줄이고 `UPDATE_EXPECT=1` 로 기준을 낮춘다
 - 탐침 메모:
   - 노트북 ②에서 파일 쓰기 요청이 fileChange 가 아니라 commandExecution 승인(PowerShell Set-Content)으로 왔다 → 완료 기준의 "파일 쓰기 승인 카드" 장면은 그 경로도 포함
   - sandbox read-only 에서는 acceptForSession 을 해도 PermissionDenied 로 못 쓴다. 승인 ≠ 샌드박스 권한
