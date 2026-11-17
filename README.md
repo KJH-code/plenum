@@ -93,6 +93,9 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 
 ## 변경 기록
 
+### 0.4.0-dev
+- 앱 내부: Claude 채팅 해석을 드라이버(`app/server/provider/claude.ts`, 내부 이벤트 모델 `provider/events.ts`)로 옮겼다. 화면·API는 그대로. 녹화 fixture는 `app/test/fixtures/providers/claude/2.1.323/`, 계약 테스트 `app/test/contract.test.ts`. 컴파일러(루트 패키지)는 바뀌지 않아 0.3.1 그대로
+
 ### 0.3.1
 - 컴파일러: 판(variant) 틀. `kit/variants/<이름>.yaml`(하네스 출력에서 빼기·치환·매니페스트 덮어쓰기, 뺀 이름이 남으면 WARN), `plenum-pack --kit/--variant/--variant-file`. 기본은 `kit.yaml` `name`과 같은 판, `variants/`가 없으면 지금과 같은 zip. 앱은 바뀌지 않았다
 
