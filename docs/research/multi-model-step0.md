@@ -695,6 +695,10 @@ export interface Driver {
 | `UsageEvent.rejected?` | `{ window: string; resetsAt: number \| null }` | 한도 막기 규칙(창 이름 정렬 후 첫 rejected, 없으면 최상위 status·rateLimitType) |
 | `PermissionRequestEvent.ext?` | `{ claude: { sessionRules: { toolName; ruleContent? }[]; toolUseId?: string } }` | "이 세션 동안 허용"은 addRules 만 destination session 으로 보냄 |
 | `UnknownEvent.reply?` | `unknown` | 답을 기다리는 모르는 요청에 드라이버가 만든 기본 거부 원문 |
+| `UnknownEvent.requestId?` | `string` | 그 요청의 id(안내 카드에 씀) |
+| `SessionStartedEvent.noSessionId?` | `true` | init 에 session_id 가 없을 때. 빈 문자열과 구분해 이전 세션 id 를 유지 |
+| `LimitWindow.rawStatus?` | `string \| null` | 하네스 status 원문(`status` 는 ok·warning·rejected 로 좁힘). 화면의 창 status 는 원문 |
+| `QuestionEvent.ext?` | `{ claude: { toolUseId?: string } }` | 질문 카드의 toolUseId |
 | `Driver.initialize()`, `Driver.prompt(text)` | `() => unknown`, `(text: string) => unknown` | 핸드셰이크·사용자 글의 원문 만들기 |
 
 P1에서 unknown 이벤트는 만들되 화면·로그에는 아직 보내지 않는다(로그 파일은 P5).
