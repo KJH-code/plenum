@@ -106,7 +106,8 @@ export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
     };
     let handled = 0;
     for (;;) {
-      const marks = fs.existsSync(waitsFile) ? fs.readFileSync(waitsFile, 'utf8').split('\n').filter(Boolean) : [];
+      // 가짜가 쓰는 중인 줄을 반만 읽지 않게: 줄바꿈으로 끝난 줄만 쓴다(마지막 줄바꿈 뒤 조각은 버린다)
+      const marks = fs.existsSync(waitsFile) ? fs.readFileSync(waitsFile, 'utf8').split('\n').slice(0, -1).filter(Boolean) : [];
       if (handled < marks.length) {
         const [idxS, kind] = marks[handled++].split(' ');
         const idx = Number(idxS);
@@ -152,6 +153,7 @@ export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
   } finally {
     off();
     await m.shutdownAll();
-    fs.rmSync(root, { recursive: true, force: true });
+    // Windows 에서 막 끝난 프로세스가 파일을 잡고 있으면 EBUSY·EPERM → Node 내장 재시도. 그래도 못 지우면 경고만(앞선 오류를 가리지 않게)
+    try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (e: any) { console.warn(`[contract] 임시 폴더를 못 지웠다: ${root} (${e?.code ?? e})`); }
   }
 }

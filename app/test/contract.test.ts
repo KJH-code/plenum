@@ -3,11 +3,16 @@
 // 장면 목록·비교 함수는 test/contract/replay.ts 에 있다(decode 단위 검사도 같은 것을 쓴다).
 // decode 단위 검사((b)(c)(e)(f)(h))는 드라이버(server/provider/claude.ts)만 돌린다. (c) 기준은
 // UPDATE_EXPECT=1 npx vitest run test/contract.test.ts 로 지금 드라이버 출력을 쓴다(golden 은 건드리지 않는다).
+// (c) 의 unknown 수는 래칫: 장면별로 기준보다 늘면 실패, 같거나 줄면 통과(줄면 경고). 나머지 칸은 정확히 같아야 한다.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createChatManager, type ChatManager } from '../server/chat.ts';
+import type { ChatEvent } from '../server/chatTypes.ts';
 import { BRANCHES, DENIED, branchHits, createClaudeDriver } from '../server/provider/claude.ts';
 import type { ProviderEvent } from '../server/provider/events.ts';
+import { makeFakeStreamClaude, writeScript } from './fakeclaudeStream.ts';
 import {
   CLAUDE_DIR, PROVIDERS_DIR, SCENES, expectPath, goldenPath, readScript, replay, sameDump, scenePath, serialize, type Dump,
 } from './contract/replay.ts';
@@ -99,16 +104,18 @@ describe('계약: 비교기 자가검사', () => {
 
 // ── decode 단위 검사 ─────────────────────────────────────
 const rawOf = (text: string) => ({ provider: 'claude', version: '2.1.323', channel: 'stdout' as const, text });
-// 녹화 한 장면의 out 줄을 새 드라이버 하나에 순서대로 넣는다. 가짜 claude 가 쓰는 줄과 같은 글자(JSON.stringify)
-function decodeScene(scene: string): { events: ProviderEvent[]; throws: number } {
+// 녹화 한 장면의 out 줄을 새 드라이버 하나에 순서대로 넣는다. 가짜 claude 가 쓰는 줄과 같은 글자(JSON.stringify).
+// in 의 interrupt 자리에서는 매니저처럼 d.interrupt() 를 부른다(드라이버가 그 턴을 cancelled 로 본다)
+function decodeScene(scene: string): { events: ProviderEvent[]; throws: number; thrown: number } {
   const d = createClaudeDriver();
   const events: ProviderEvent[] = [];
   let throws = 0;
   for (const x of readScript(scenePath(scene))) {
+    if (x.dir === 'in' && x.msg?.type === 'control_request' && x.msg?.request?.subtype === 'interrupt') { d.interrupt(); continue; }
     if (x.dir !== 'out') continue;
     try { events.push(...d.decode(rawOf(JSON.stringify(x.msg)))); } catch { throws++; }
   }
-  return { events, throws };
+  return { events, throws, thrown: d.stats().thrown };
 }
 
 interface Expect { types: string[]; permissionCards: number; questionCards: number; sessionScopeOption: boolean; stopReasons: string[]; windows: string[]; unknown: number }
@@ -134,16 +141,24 @@ function shape(v: unknown): unknown {
 }
 
 describe('계약: decode', () => {
-  it.each(SCENES)('(b) %s: out 줄 전부 decode 해도 throw 0', (scene) => {
-    const { events, throws } = decodeScene(scene);
+  // decode 는 예외를 안에서 잡아 unknown 으로 바꾸므로 밖으로 나온 throw 만 세면 늘 0 이다 → 드라이버의 예외 카운터와 thrown 표시를 본다
+  it.each(SCENES)('(b) %s: out 줄 전부 decode 해도 예외 0', (scene) => {
+    const { events, throws, thrown } = decodeScene(scene);
     expect(throws).toBe(0);
+    expect(thrown).toBe(0);
+    expect(events.filter((e) => e.type === 'unknown' && e.thrown)).toEqual([]);
     expect(events.length).toBeGreaterThan(0);
   });
 
-  it.each(SCENES)('(c) %s: 이벤트 요약이 기준(<장면>.expect.json)과 같다', (scene) => {
+  // unknown 수는 래칫(늘면 실패). types 는 unknown 을 뺀 순서로 정확히 비교한다(unknown 이 매핑으로 줄어도 나머지 순서는 그대로)
+  it.each(SCENES)('(c) %s: 이벤트 요약이 기준(<장면>.expect.json)과 같다(unknown 수는 늘지 않는다)', (scene) => {
     const actual = summarize(decodeScene(scene).events);
     if (UPDATE_EXPECT) { fs.writeFileSync(expectPath(scene), `${JSON.stringify(actual, null, 2)}\n`); return; }
-    expect(actual).toEqual(JSON.parse(fs.readFileSync(expectPath(scene), 'utf8')));
+    const want = JSON.parse(fs.readFileSync(expectPath(scene), 'utf8')) as Expect;
+    const known = (e: Expect) => ({ ...e, types: e.types.filter((t) => t !== 'unknown'), unknown: 0 });
+    expect(known(actual)).toEqual(known(want));
+    expect(actual.unknown, `${scene}: unknown 수가 기준 ${want.unknown} 보다 늘었다`).toBeLessThanOrEqual(want.unknown);
+    if (actual.unknown < want.unknown) console.warn(`[contract (c)] ${scene}: unknown ${want.unknown} → ${actual.unknown}. expect 갱신 가능(UPDATE_EXPECT=1)`);
   });
 
   it('(e) 녹화 in 의 control_response 마다 드라이버가 만든 답의 키 집합·값 타입이 같다', () => {
@@ -183,6 +198,31 @@ describe('계약: decode', () => {
     expect(mystery.type === 'unknown' && JSON.stringify(mystery.reply))
       .toBe('{"type":"control_response","response":{"subtype":"error","request_id":"x","error":"Plenum 채팅이 처리하지 못하는 요청"}}');
     expect(one('{"type":"control_request","request":{"subtype":"can_use_tool"}}')).toMatchObject({ type: 'unknown', reason: 'field' });
+    expect(d.stats().thrown).toBe(0);
+
+    // decode 중 예외가 난 control_request 도 거절로 답한다(subtype 을 String() 하다 터지는 값)
+    const r9 = one('{"type":"control_request","request_id":"r9","request":{"subtype":{"toString":1}}}');
+    expect(r9).toMatchObject({ type: 'unknown', reason: 'field', thrown: true, answeredWithDefault: true, requestId: 'r9', hint: null });
+    expect(r9.type === 'unknown' && JSON.stringify(r9.reply))
+      .toBe('{"type":"control_response","response":{"subtype":"error","request_id":"r9","error":"Plenum 채팅이 처리하지 못하는 요청"}}');
+    expect(d.stats().thrown).toBe(1);
+
+    // Skill 판정용: 원래 name 이 문자열이 아니면 표시한다
+    const arrName = one(JSON.stringify({ type: 'assistant', message: { id: 'ms', content: [{ type: 'tool_use', id: 't1', name: ['Skill'], input: { skill: 'plus' } }] } }));
+    expect(arrName).toMatchObject({ type: 'toolCall', toolName: 'Skill', toolNameNotString: true });
+    const strName = one(JSON.stringify({ type: 'assistant', message: { id: 'ms', content: [{ type: 'tool_use', id: 't2', name: 'Skill', input: { skill: 'plus' } }] } }));
+    expect(strName.type === 'toolCall' && 'toolNameNotString' in strName).toBe(false);
+
+    // 중단: interrupt() 를 만든 턴의 error_during_execution 만 cancelled. result 를 받으면 플래그가 내려간다
+    const ede = '{"type":"result","subtype":"error_during_execution","is_error":true}';
+    expect(one(ede)).toMatchObject({ type: 'turnEnd', stopReason: 'error' });
+    const di = createClaudeDriver();
+    di.interrupt();
+    expect(di.decode(rawOf(ede))[0]).toMatchObject({ type: 'turnEnd', stopReason: 'cancelled', rawSubtype: 'error_during_execution' });
+    expect(di.decode(rawOf(ede))[0]).toMatchObject({ type: 'turnEnd', stopReason: 'error' });
+    di.interrupt();
+    expect(di.decode(rawOf('{"type":"result","subtype":"success","is_error":false}'))[0]).toMatchObject({ stopReason: 'end_turn' });
+    expect(di.decode(rawOf(ede))[0]).toMatchObject({ stopReason: 'error' });
 
     // 값 몇 개를 직접: 조각 번호, 세션 규칙의 ruleContent, 거부 문구
     d.decode(rawOf('{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}'));
@@ -207,4 +247,62 @@ describe('계약: decode', () => {
     console.log(`[contract (h)] 안 닿은 분기 ${missed.length}/${BRANCHES.length}: ${missed.join(', ') || '없음'}`);
     expect(branchHits.size).toBeGreaterThan(0);
   });
+});
+
+// ── 매니저 수준: 가짜 claude 합성 대본(chat.test.ts 의 합성 대본과 같은 방식) ─────
+const INIT = { type: 'system', subtype: 'init', session_id: '11111111-2222-3333-4444-555555555555', claude_code_version: '2.1.323', model: 'claude-haiku-5-5', permissionMode: 'default' };
+const RESULT = { type: 'result', subtype: 'success', is_error: false, result: '끝', permission_denials: [] };
+const HELLO = [{ dir: 'in', msg: { type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } } }, { dir: 'in', msg: { type: 'user' } }] as const;
+const roots: string[] = [];
+const managers: ChatManager[] = [];
+afterEach(async () => {
+  await Promise.all(managers.splice(0).map((m) => m.shutdownAll()));
+  for (const r of roots.splice(0)) { try { fs.rmSync(r, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* 경고 없이 남긴다 */ } }
+});
+async function runScript(items: Parameters<typeof writeScript>[1]) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plenum-contract-m-'));
+  roots.push(root);
+  const projDir = path.join(root, 'project');
+  fs.mkdirSync(projDir);
+  const fake = makeFakeStreamClaude(path.join(root, 'fake'));
+  const file = path.join(root, 'script.jsonl');
+  writeScript(file, items);
+  const m = createChatManager({ cfgDir: path.join(root, 'cfg'), env: fake.env({ script: file, extra: { CLAUDE_CONFIG_DIR: path.join(root, 'claude-config') } }), closeWaitMs: 3000 });
+  managers.push(m);
+  const id = (await m.start({ id: 'p1', path: projDir }, { text: '안녕' })).chat.chatId;
+  const evs = () => { const out: ChatEvent[] = []; m.subscribe(id, 0, (e) => out.push(e))(); return out; };
+  const until = async (f: () => boolean, ms = 15000) => {
+    const end = Date.now() + ms;
+    while (!f()) { if (Date.now() > end) throw new Error(`조건이 ${ms}ms 안에 안 됐다: ${JSON.stringify(evs().map((e) => e.type))}`); await new Promise((r) => setTimeout(r, 10)); }
+  };
+  return { m, id, fake, evs, until };
+}
+
+describe('계약: 매니저', () => {
+  it('(f) decode 중 예외가 난 control_request(r9) → stdin 에 error 답, unknown 카드·notice, 채팅은 멈추지 않는다', async () => {
+    const { fake, evs, until } = await runScript([...HELLO, { dir: 'out', msg: INIT },
+      { dir: 'out', msg: { type: 'control_request', request_id: 'r9', request: { subtype: { toString: 1 } } } },
+      // 답이 오기 전에는 가짜가 여기서 멈춘다 → 뒤 result 가 오면 답이 갔다는 뜻
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'r9' } } },
+      { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    await until(() => evs().some((e) => e.type === 'result'));
+    expect(fake.stdin().filter((x) => x.type === 'control_response'))
+      .toEqual([{ type: 'control_response', response: { subtype: 'error', request_id: 'r9', error: 'Plenum 채팅이 처리하지 못하는 요청' } }]);
+    const e = evs();
+    expect(e.find((x) => x.type === 'card')).toMatchObject({ card: { kind: 'unknown', requestId: 'r9', subtype: '', version: '2.1.323' } });
+    expect(e.some((x) => x.type === 'notice' && x.code === 'unknown-request')).toBe(true);
+    expect(e.filter((x) => x.type === 'state').at(-1)).toMatchObject({ state: 'idle' });
+  }, 30000);
+
+  it('(B2) Skill 모드 감지는 원래 name 이 문자열 "Skill" 일 때만', async () => {
+    const tool = (id: string, name: unknown) => ({ dir: 'out' as const, msg: { type: 'assistant', message: { id: `m-${id}`, content: [{ type: 'tool_use', id, name, input: { skill: 'jh-kit:plus' } }] } } });
+    const arr = await runScript([...HELLO, { dir: 'out', msg: INIT }, tool('t1', ['Skill']), { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    await arr.until(() => arr.evs().some((e) => e.type === 'result'));
+    expect(arr.evs().find((e) => e.type === 'tool')).toMatchObject({ toolUseId: 't1', name: 'Skill' });
+    expect(arr.evs().filter((e) => e.type === 'mode')).toEqual([]);
+
+    const str = await runScript([...HELLO, { dir: 'out', msg: INIT }, tool('t2', 'Skill'), { dir: 'out', msg: RESULT }, { dir: 'exit', code: 0 }]);
+    await str.until(() => str.evs().some((e) => e.type === 'result'));
+    expect(str.evs().filter((e) => e.type === 'mode')).toMatchObject([{ mode: expect.any(String) }]);
+  }, 30000);
 });

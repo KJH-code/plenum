@@ -18,7 +18,7 @@ import { commandFor, resolveCommand } from './open.ts';
 import { addPid, killTree, killTreeNow, ownerStartTime, removePid } from './proc.ts';
 import { readLimits, saveLimits, updateSession } from './store.ts';
 
-// 드라이버로 옮긴 것 (다른 파일·테스트가 여기서 import 한다)
+// 드라이버로 옮긴 것. 옛 위치(chat.ts)의 공개 export 를 유지한다 — 지금 저장소 안에서 여기로 import 하는 곳은 없다
 export { DENIED, parseLimits } from './provider/claude.ts';
 
 export interface ChatDeps {
@@ -264,7 +264,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       case 'toolCall':
         if (ev.status === 'pending') {
           emit(c, { type: 'tool', toolUseId: ev.toolCallId, name: ev.toolName ?? '', input: ev.rawInput, parentToolUseId: ev.parentToolCallId ?? null });
-          if (ev.toolName === 'Skill' && isObj(ev.rawInput)) {
+          // 원래 name 이 문자열 'Skill' 일 때만(옛 코드 b.name === 'Skill'). ["Skill"] 같은 값은 String() 으로 같아져도 아니다
+          if (ev.toolName === 'Skill' && !ev.toolNameNotString && isObj(ev.rawInput)) {
             const mode = modeFromSkill(ev.rawInput.skill);
             if (mode) setMode(c, mode);
           }
@@ -306,7 +307,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
         setState(c, 'idle');
         return;
       case 'unknown': {
-        // 답을 기다리는 모르는 요청만: 드라이버가 만든 거절 답을 쓰고 터미널로 열기 안내. 그 밖의 unknown 은 버린다(P1)
+        // 답을 기다리는 모르는 요청만(decode 가 예외를 잡은 control_request 도 같다): 드라이버가 만든 거절 답을 쓰고 터미널로 열기 안내.
+        // 그 밖의 unknown 은 버린다(P1)
         if (!ev.answeredWithDefault || ev.requestId === undefined) return;
         const requestId = ev.requestId;
         try { write(c, ev.reply); } catch { /* 끝남 */ }
@@ -389,7 +391,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     const c: Chat = {
       info: { chatId, projectId: project.id, sessionId: resume ?? null, state: 'starting', mode: null, model: model ?? null, effort: effort ?? null, version: null, lastSeq: 0 },
       projectId: project.id, child, events: [], listeners: new Set(), cards: new Map(), workers: new Map(),
-      driver: createClaudeDriver({ version: () => c.info.version }), closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
+      driver: createClaudeDriver(), closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
     };
     chats.set(chatId, c);
     if (child.pid) { try { addPid(cfgDir, child.pid, { platform }).catch(() => {}); } catch { /* 무시 */ } }

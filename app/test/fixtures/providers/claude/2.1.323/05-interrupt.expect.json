@@ -14,7 +14,7 @@
   "questionCards": 0,
   "sessionScopeOption": false,
   "stopReasons": [
-    "error"
+    "cancelled"
   ],
   "windows": [],
   "unknown": 7

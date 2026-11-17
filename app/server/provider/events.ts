@@ -1,6 +1,13 @@
-// 드라이버 → 앱 공용 계약 (docs/research/multi-model-step0.md G절 초안).
-// 원칙: 드라이버가 이해 못 한 것은 버리지 않고 'unknown' 으로 올린다. decode 는 throw 하지 않는다.
-// G절 칸 이름·모양은 그대로 두고, 지금 채팅 동작을 바이트 단위로 지키는 데 필요한 값만 선택 칸으로 더했다(`// P1: 동작 보존`).
+// 드라이버 → 앱 공용 계약 (docs/research/multi-model-step0.md G절, G.1 표가 G절 초안과 달라진 점을 적는다).
+// 원칙: 드라이버가 이해 못 한 것은 버리지 않고 'unknown' 으로 올린다. decode 는 throw 하지 않는다(안에서 잡으면 unknown + thrown).
+// G절 초안에서 달라진 점(`// P1: 동작 보존` 이 붙은 칸):
+//   - 필수로 더한 칸: TurnEnd.rawSubtype·isError, SessionStarted.version·permissionMode (지금 ChatEvent 가 원값을 그대로 낸다)
+//   - 선택 칸: Message.index, ToolCall.toolNameNotString, PermissionRequest.ext·Question.ext(toolUseId·sessionRules),
+//     LimitWindow.rawStatus, Usage.rejected, SessionStarted.noSessionId, Unknown.reply·requestId·thrown
+//   - Driver.detect 는 선택(detect?) — P2 에서 구현. Driver.initialize·prompt 는 더했다
+//   - raw 는 unknown 에만 붙인다(필수). 다른 이벤트에는 붙이지 않는다(Base.raw 는 선택 칸으로만 남음)
+//   - seq·at 은 드라이버가 0 으로 둔다. 매니저(chat.ts emit)가 ChatEvent 로 바꿀 때 붙인다
+//   - stopReason 'cancelled': 이번 턴에 interrupt() 를 만든 뒤 온 error_during_execution (Claude 드라이버)
 
 export type ProviderId = string;              // 설정 파일의 id ("claude", "codex", "opencode" …)
 export type DriverKind = 'claude-stream' | 'acp';
@@ -40,6 +47,7 @@ export type ToolCallEvent = Base & {
   output?: { text: string; isError: boolean };// 앞 2000자
   locations?: { path: string; line?: number }[];
   parentToolCallId?: string | null;           // 서브에이전트 안의 호출
+  toolNameNotString?: true;                   // P1: 동작 보존 — 원래 name 이 문자열이 아니었음(toolName 은 String(...) 값). Skill 판정에서 뺀다
 };
 
 // ── 승인 카드 (ACP session/request_permission)
@@ -128,6 +136,7 @@ export type UnknownEvent = Base & {
   answeredWithDefault: boolean;
   reply?: unknown;                            // P1: 동작 보존 — 앱이 하네스에 쓸 기본 답 원문(answeredWithDefault 일 때)
   requestId?: string;                         // P1: 동작 보존 — 그 요청의 id(unknown 카드의 requestId)
+  thrown?: true;                              // decode 가 이 줄에서 예외를 잡았음(reason 은 'field'). 드라이버 버그 신호
 };
 
 export type ProviderEvent =

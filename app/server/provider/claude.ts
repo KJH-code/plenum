@@ -136,27 +136,42 @@ const TOOL_KIND: Record<string, ToolKind> = {
 };
 const kindOf = (name: string, input: unknown): ToolKind => TOOL_KIND[name] ?? (isObj(input) && typeof input.command === 'string' ? 'execute' : 'other');
 
-function stopReasonOf(subtype: string, isError: boolean): StopReason {
+// interrupted: 이번 턴에 드라이버가 interrupt() 원문을 만들었음. 그 뒤 오는 error_during_execution 은 사용자가 멈춘 것(cancelled)
+function stopReasonOf(subtype: string, isError: boolean, interrupted: boolean): StopReason {
+  if (interrupted && subtype === 'error_during_execution') return 'cancelled';
   if (subtype === 'error_max_turns') return 'max_turn_requests';
   if (isError || subtype.startsWith('error')) return 'error';
   return 'end_turn';
 }
 
-// ── 드라이버 ────────────────────────────────────────────
-export interface ClaudeDriverOptions { version?: () => string | null }
+// decode 안에서 예외가 난 줄: 원문을 다시 안전하게 읽어 답을 기다리는 control_request 인지 본다.
+// JSON.parse 결과라 getter 는 없다. 그래도 String() 은 쓰지 않는다({toString:1} 같은 값에서 또 터진다) — typeof 검사만
+function thrownRequest(text: string): { requestId: string; subtype: string | null } | null {
+  let m: unknown;
+  try { m = JSON.parse(text); } catch { return null; }
+  if (!isObj(m) || m.type !== 'control_request' || typeof m.request_id !== 'string') return null;
+  const sub = isObj(m.request) ? m.request.subtype : undefined;
+  return { requestId: m.request_id, subtype: typeof sub === 'string' ? sub : null };
+}
 
-export function createClaudeDriver(opts: ClaudeDriverOptions = {}) {
+// ── 드라이버 ────────────────────────────────────────────
+export function createClaudeDriver() {
   let lastMessageId: string | null = null;
   let sessionId: string | null = null;
   const taskToTool = new Map<string, string>();
   const pending = new Map<string, { input: unknown; sessionRules: SessionRule[] }>();
   let intN = 0;
+  let interrupted = false;                     // 이번 턴에 interrupt() 를 만들었음. result 를 받으면 내린다
+  let thrown = 0;                              // decode 가 안에서 잡은 예외 수(계약 테스트 (b) 가 0 인지 본다)
 
   const base = () => ({ seq: 0, at: 0, sessionId });
   const unknown = (raw: Raw, reason: UnknownEvent['reason'], hint: string | null, extra: Partial<UnknownEvent> = {}): UnknownEvent =>
     ({ ...base(), type: 'unknown', raw, reason, hint, answeredWithDefault: false, ...extra });
   const success = (requestId: string, response: Record<string, unknown>) =>
     ({ type: 'control_response', response: { subtype: 'success', request_id: requestId, response } });
+  // 처리하지 못하는 요청에 돌려주는 거절 답(답을 안 하면 claude 가 멈춘다)
+  const unhandled = (requestId: string) =>
+    ({ type: 'control_response', response: { subtype: 'error', request_id: requestId, error: UNHANDLED } });
 
   function decodeSystem(raw: Raw, m: Record<string, any>): ProviderEvent[] {
     if (m.subtype === 'init') {
@@ -193,8 +208,7 @@ export function createClaudeDriver(opts: ClaudeDriverOptions = {}) {
     if (req.subtype !== 'can_use_tool') {
       hit('control_request/other');
       // 답을 안 하면 claude 가 멈춘다 → error 로 거절하는 답을 같이 올린다(앱이 쓴다)
-      const reply = { type: 'control_response', response: { subtype: 'error', request_id: requestId, error: UNHANDLED } };
-      return [unknown(raw, 'event', String(req.subtype ?? ''), { answeredWithDefault: true, reply, requestId })];
+      return [unknown(raw, 'event', String(req.subtype ?? ''), { answeredWithDefault: true, reply: unhandled(requestId), requestId })];
     }
     const toolName = String(req.tool_name ?? '');
     const toolUseId = str(req.tool_use_id) ?? undefined;
@@ -260,7 +274,10 @@ export function createClaudeDriver(opts: ClaudeDriverOptions = {}) {
           } else if (b.type === 'tool_use' && typeof b.id === 'string') {
             hit('assistant/tool_use');
             const name = String(b.name ?? '');
-            out.push({ ...base(), type: 'toolCall', toolCallId: b.id, title: toolLabel(name, b.input), kind: kindOf(name, b.input), status: 'pending', toolName: name, rawInput: b.input, parentToolCallId: parent });
+            out.push({
+              ...base(), type: 'toolCall', toolCallId: b.id, title: toolLabel(name, b.input), kind: kindOf(name, b.input), status: 'pending', toolName: name, rawInput: b.input, parentToolCallId: parent,
+              ...(typeof b.name === 'string' ? {} : { toolNameNotString: true as const }),
+            });
           } else hit('assistant/other-block');
         }
         return out;
@@ -293,8 +310,10 @@ export function createClaudeDriver(opts: ClaudeDriverOptions = {}) {
         hit('result');
         const rawSubtype = String(m.subtype ?? '');
         const isError = !!m.is_error;
+        const wasInterrupted = interrupted;
+        interrupted = false;
         return [{
-          ...base(), type: 'turnEnd', stopReason: stopReasonOf(rawSubtype, isError), text: str(m.result),
+          ...base(), type: 'turnEnd', stopReason: stopReasonOf(rawSubtype, isError, wasInterrupted), text: str(m.result),
           deniedCount: Array.isArray(m.permission_denials) ? m.permission_denials.length : 0, rawSubtype, isError,
         }];
       }
@@ -304,12 +323,20 @@ export function createClaudeDriver(opts: ClaudeDriverOptions = {}) {
     }
   }
 
-  const driver: Driver & { version: () => string | null } = {
+  const driver: Driver & { stats: () => { thrown: number } } = {
     kind: 'claude-stream',
-    version: opts.version ?? (() => null),
     decode(raw: Raw): ProviderEvent[] {
-      try { return decodeLine(raw); } catch { hit('throw'); return [unknown(raw, 'field', null)]; }
+      try { return decodeLine(raw); } catch {
+        hit('throw');
+        thrown++;
+        // 답을 기다리는 요청이면 반드시 거절로 답한다(안 하면 claude 가 영원히 기다린다)
+        const r = thrownRequest(raw.text);
+        if (r) return [unknown(raw, 'field', r.subtype, { thrown: true, answeredWithDefault: true, reply: unhandled(r.requestId), requestId: r.requestId })];
+        return [unknown(raw, 'field', null, { thrown: true })];
+      }
     },
+    /** decode 가 안에서 잡은 예외 수. 0 이 아니면 드라이버 버그(계약 테스트 (b)) */
+    stats: () => ({ thrown }),
     answerPermission(requestId: string, o: PermissionOutcome) {
       const p = pending.get(requestId);
       if (o.outcome === 'selected' && o.optionId === 'allow_once') return success(requestId, { behavior: 'allow', updatedInput: p?.input });
@@ -327,6 +354,7 @@ export function createClaudeDriver(opts: ClaudeDriverOptions = {}) {
     },
     interrupt() {
       intN++;
+      interrupted = true;
       return { type: 'control_request', request_id: `int-${intN}`, request: { subtype: 'interrupt' } };
     },
     initialize() {
