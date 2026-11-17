@@ -1,9 +1,12 @@
 // 계약 테스트 재생: 녹화 한 장면을 가짜 claude(fakeclaudeStream.ts)로 돌려 지금 채팅 매니저(server/chat.ts)가 내는
 // ChatEvent 열과 stdin 줄을 모은다. 가짜가 녹화의 in 자리에서 기다리면(FAKE_STREAM_WAITS) 녹화된 in 을 매니저 API 로 바꿔 넣는다:
 //   control_response + updatedPermissions → respond allow-session, updatedInput.answers → respond answer,
-//   behavior allow → allow, deny → deny + 이유(message 의 "이유: " 뒤, 없으면 빈 값), user → send,
+//   behavior allow → allow, deny → deny + 이유(message 의 "이유: " 뒤, 없으면 message 전체), user → send,
 //   control_request interrupt → interrupt, exit(가짜가 stdin 닫힘을 기다림) → close.
 // 매니저가 스스로 쓰는 in(첫 initialize, 첫 user)은 넣지 않는다.
+// 동기화는 시간이 아니라 조건으로 한다(가짜의 기다림 신호 + 매니저 이벤트):
+//   control_response X → card(requestId X) 이벤트가 왔다, user → 그 앞 녹화 result 수만큼 result 가 왔고 state idle,
+//   interrupt → 신호만(interrupt() 는 이벤트를 내지 않는다), exit → state idle 또는 ended.
 // 정규화: at=0, chatId→"CHAT", limits.receivedAt=0, worker.startedAt·endedAt 숫자면 0. 그 밖의 값은 그대로.
 import fs from 'node:fs';
 import os from 'node:os';
@@ -53,7 +56,6 @@ function normalize(ev: ChatEvent, chatId: string): unknown {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const QUIET_MS = 60;
 const SCENE_TIMEOUT_MS = 20000;
 
 export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
@@ -78,11 +80,9 @@ export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
   const m = createChatManager({ cfgDir, env, closeWaitMs: 3000 });
 
   const raw: ChatEvent[] = [];
-  let lastAt = Date.now();
   let chatId: string | null = null;
   const early: { id: string; ev: ChatEvent }[] = [];
   const off = m.onEvent((c, ev) => {
-    lastAt = Date.now();
     if (chatId === null) early.push({ id: c.chatId, ev });
     else if (c.chatId === chatId) raw.push(ev);
   });
@@ -93,15 +93,16 @@ export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
     const id = chatId;
     const ended = () => raw.some((e) => e.type === 'state' && e.state === 'ended');
     const hasCard = (rid: string) => raw.some((e) => e.type === 'card' && e.card.requestId === rid);
-    // 가짜가 기다리기 시작한 뒤 앞서 낸 줄이 매니저에 다 닿을 때까지(이벤트가 QUIET_MS 동안 없음 + 조건)
-    const settle = async (cond: () => boolean = () => true) => {
-      const end = Date.now() + SCENE_TIMEOUT_MS;
-      while (!(Date.now() - lastAt >= QUIET_MS && cond())) {
-        if (Date.now() > end) throw new Error(`${scene}: 매니저 이벤트가 가라앉지 않는다`);
-        await sleep(10);
+    const state = () => { for (let i = raw.length - 1; i >= 0; i--) { const e = raw[i]; if (e.type === 'state') return e.state; } return null; };
+    const results = () => raw.filter((e) => e.type === 'result').length;
+    const deadline = Date.now() + SCENE_TIMEOUT_MS;
+    // 매니저가 그 in 을 받을 준비가 될 때까지(조건). 시간 대기는 전체 상한뿐
+    const ready = async (what: string, cond: () => boolean) => {
+      while (!cond()) {
+        if (Date.now() > deadline) throw new Error(`${scene}: ${what} 조건이 ${SCENE_TIMEOUT_MS}ms 안에 안 됐다 (state ${state()}, 이벤트 ${raw.length})`);
+        await sleep(5);
       }
     };
-    const deadline = Date.now() + SCENE_TIMEOUT_MS;
     let handled = 0;
     for (;;) {
       const marks = fs.existsSync(waitsFile) ? fs.readFileSync(waitsFile, 'utf8').split('\n').filter(Boolean) : [];
@@ -112,7 +113,7 @@ export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
         const x = script[idx];
         if (!x) throw new Error(`${scene}: 대본에 없는 인덱스 ${idxS}`);
         if (kind === 'exit') {
-          await settle();
+          await ready(`${idx} exit`, () => state() === 'idle' || state() === 'ended');
           await m.close(id);
           continue;
         }
@@ -121,22 +122,22 @@ export async function replay(scene: string, dir = CLAUDE_DIR): Promise<Replay> {
           const r = msg.response ?? {};
           const rid: string = r.request_id;
           const b = r.response ?? {};
-          await settle(() => hasCard(rid));
+          await ready(`${idx} control_response`, () => hasCard(rid));
           if (b.behavior === 'allow' && Array.isArray(b.updatedPermissions)) m.respond(id, { requestId: rid, action: 'allow-session' });
           else if (b.behavior === 'allow' && b.updatedInput && typeof b.updatedInput === 'object' && b.updatedInput.answers) m.respond(id, { requestId: rid, action: 'answer', answers: b.updatedInput.answers });
           else if (b.behavior === 'allow') m.respond(id, { requestId: rid, action: 'allow' });
           else if (b.behavior === 'deny') {
             const message = typeof b.message === 'string' ? b.message : '';
             const at = message.indexOf('이유: ');
-            m.respond(id, { requestId: rid, action: 'deny', reason: at >= 0 ? message.slice(at + '이유: '.length) : '' });
+            m.respond(id, { requestId: rid, action: 'deny', reason: at >= 0 ? message.slice(at + '이유: '.length) : message });
           } else throw new Error(`${scene}: ${idx} 모르는 control_response: ${JSON.stringify(msg).slice(0, 200)}`);
         } else if (msg?.type === 'user') {
           const t = msg.message?.content;
           if (typeof t !== 'string') throw new Error(`${scene}: ${idx} user in 이 글자가 아니다`);
-          await settle();
+          const before = script.slice(0, idx).filter((y) => y.dir === 'out' && y.msg?.type === 'result').length;
+          await ready(`${idx} user`, () => results() >= before && state() === 'idle');
           m.send(id, t);
         } else if (msg?.type === 'control_request' && msg.request?.subtype === 'interrupt') {
-          await settle();
           m.interrupt(id);
         } else throw new Error(`${scene}: ${idx} 재생할 수 없는 in: ${JSON.stringify(msg).slice(0, 200)}`);
         continue;

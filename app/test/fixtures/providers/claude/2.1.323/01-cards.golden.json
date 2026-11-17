@@ -318,6 +318,7 @@
       "type": "card-resolved",
       "requestId": "ceff45b8-b10a-4692-b22a-c8de0a0f5a95",
       "outcome": "deny",
+      "detail": "삭제는 내가 직접 할게",
       "seq": 29,
       "at": 0
     },
@@ -1005,6 +1006,6 @@
     "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"a255f41e-b2a0-4c6b-9c26-67ec27c67966\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"questions\":[{\"question\":\"Which file name?\",\"header\":\"File\",\"options\":[{\"label\":\"a.txt (Recommended)\",\"description\":\"Create and then remove a.txt\"},{\"label\":\"b.txt\",\"description\":\"Create and then remove b.txt\"}],\"multiSelect\":false}],\"answers\":{\"Which file name?\":\"a.txt (Recommended)\"}}}}}",
     "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"0cfb5ccc-6d1d-4451-a920-f7dc67c42f8a\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch a.txt\",\"description\":\"Create a.txt\"}}}}",
     "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"9f9441d9-2f69-41b7-a98a-f49b8579b52f\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch c.txt\",\"description\":\"Create c.txt\"},\"updatedPermissions\":[{\"type\":\"addRules\",\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"touch c.txt\"}],\"behavior\":\"allow\",\"destination\":\"session\"}]}}}",
-    "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"ceff45b8-b10a-4692-b22a-c8de0a0f5a95\",\"response\":{\"behavior\":\"deny\",\"message\":\"사용자가 직접 거부했다(훅 아님).\"}}}"
+    "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"ceff45b8-b10a-4692-b22a-c8de0a0f5a95\",\"response\":{\"behavior\":\"deny\",\"message\":\"사용자가 직접 거부했다(훅 아님). 이유: 삭제는 내가 직접 할게\"}}}"
   ]
 }
