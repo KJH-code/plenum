@@ -1,0 +1,65 @@
+{
+  "scene": "05-interrupt",
+  "events": [
+    {
+      "type": "state",
+      "state": "starting",
+      "seq": 1,
+      "at": 0
+    },
+    {
+      "type": "user",
+      "text": "No mode questions. Write a 600 word story about a robot, slowly.",
+      "seq": 2,
+      "at": 0
+    },
+    {
+      "type": "init",
+      "sessionId": "4b6b568b-6d83-4d93-ba05-7c608b2d16f6",
+      "version": "2.1.323",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "default",
+      "seq": 3,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "running",
+      "seq": 4,
+      "at": 0
+    },
+    {
+      "type": "result",
+      "subtype": "error_during_execution",
+      "isError": true,
+      "text": null,
+      "denials": 0,
+      "seq": 5,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "idle",
+      "seq": 6,
+      "at": 0
+    },
+    {
+      "type": "exit",
+      "code": 1,
+      "signal": null,
+      "seq": 7,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "ended",
+      "seq": 8,
+      "at": 0
+    }
+  ],
+  "stdin": [
+    "{\"type\":\"control_request\",\"request_id\":\"init-1\",\"request\":{\"subtype\":\"initialize\"}}",
+    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"No mode questions. Write a 600 word story about a robot, slowly.\"}}",
+    "{\"type\":\"control_request\",\"request_id\":\"int-1\",\"request\":{\"subtype\":\"interrupt\"}}"
+  ]
+}

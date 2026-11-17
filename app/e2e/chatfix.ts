@@ -4,7 +4,7 @@ import path from 'node:path';
 import { APP } from '../test/helpers.ts';
 import { writeScript } from '../test/fakeclaudeStream.ts';
 
-export const REC = (name: string) => path.join(APP, 'test', 'fixtures', 'stream', name);
+export const REC = (name: string) => path.join(APP, 'test', 'fixtures', 'providers', 'claude', '2.1.323', name);
 const HISTORY = path.join(APP, 'test', 'fixtures', 'history', 'projects');
 
 const HELLO = [{ dir: 'in', msg: { type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } } }, { dir: 'in', msg: { type: 'user' } }] as const;

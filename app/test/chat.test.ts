@@ -1,4 +1,4 @@
-// 채팅 매니저·라우트: 진짜 claude 녹화(fixtures/stream)를 가짜 claude 로 재생한다.
+// 채팅 매니저·라우트: 진짜 claude 녹화(fixtures/providers/claude/2.1.323)를 가짜 claude 로 재생한다.
 // 가짜 claude 는 PATH 이름으로 찾는다(fakeclaudeStream.ts). 임시 폴더는 한글·공백 이름.
 import fs from 'node:fs';
 import http from 'node:http';
@@ -15,7 +15,7 @@ import { readKit } from '../server/kit.ts';
 import { APP, copyDir, inProcess } from './helpers.ts';
 import { FIXTURE_KIT } from './kitrepo.ts';
 
-const REC = path.join(APP, 'test', 'fixtures', 'stream');
+const REC = path.join(APP, 'test', 'fixtures', 'providers', 'claude', '2.1.323');
 const rec = (name: string) => path.join(REC, name);
 
 interface Setup { root: string; cfgDir: string; project: { id: string; path: string }; fake: FakeStreamClaude }

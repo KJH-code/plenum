@@ -7,6 +7,8 @@
 // 기다리지 않던 interrupt 를 받으면 control_response {still_queued:[]} + result/error_during_execution 을 내고 종료 1.
 // FAKE_STREAM_LOG: 받은 stdin 줄 기록. FAKE_STREAM_ARGS: {args, cwd, sessionEnv, notify(받은 PLENUM_NOTIFY, 없으면 null)} 한 줄. FAKE_STREAM_DELAY_MS: out 줄 간격. 합성 대본 out 줄의 delayMs: 그 줄만 늦게 낸다.
 // --version → FAKE_CLAUDE_VERSION(기본 2.1.323), --help → FAKE_CLAUDE_HELP_EFFORT=0 이면 --effort 줄 없는 도움말.
+// FAKE_STREAM_WAITS(선택): in 자리에서 기다리기 시작할 때 "<대본 인덱스> <msg.type>", exit 자리에서 stdin 닫힘을 기다리기 시작할 때
+//   "<대본 인덱스> exit" 를 한 줄씩 덧붙인다. 대본 인덱스 = in·out·exit 만 남긴 줄 순서(0부터). 계약 테스트(test/contract/replay.ts)가 쓴다.
 // FAKE_STREAM_HANG=1: 시작하자마자 손자 프로세스 하나를 띄우고(FAKE_STREAM_PIDS 에 "자기 손자" pid 기록) 무엇을 받아도 안 끝난다.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -78,13 +80,17 @@ async function waitFor(pred) {
   }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitMark = (i, kind) => fs.appendFileSync(env.FAKE_STREAM_WAITS, i + ' ' + kind + '\n');
 (async () => {
   let code = 0;
-  for (const x of script) {
+  let exitAt = -1;
+  for (let i = 0; i < script.length; i++) {
+    const x = script[i];
     if (x.dir === 'out') { if (delay) await sleep(delay); if (x.delayMs) await sleep(x.delayMs); out(x.msg); }
-    else if (x.dir === 'in') { waitingFor = x.msg; await waitFor(matches(x.msg)); waitingFor = null; }
-    else { code = x.code == null ? 0 : x.code; break; }
+    else if (x.dir === 'in') { if (env.FAKE_STREAM_WAITS) waitMark(i, x.msg && x.msg.type); waitingFor = x.msg; await waitFor(matches(x.msg)); waitingFor = null; }
+    else { code = x.code == null ? 0 : x.code; exitAt = i; break; }
   }
+  if (env.FAKE_STREAM_WAITS && exitAt >= 0) waitMark(exitAt, 'exit');
   await waitFor(() => false);
   finish(code);
 })();

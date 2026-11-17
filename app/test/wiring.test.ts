@@ -23,7 +23,7 @@ fs.mkdirSync(path.join(claudeHome, 'projects', 'x'), { recursive: true });
 fs.writeFileSync(path.join(claudeHome, 'projects', 'x', `${TERM_SID}.jsonl`), JSON.stringify({ type: 'user', cwd: projDir, timestamp: '2026-11-13T01:00:00.000Z', message: { role: 'user', content: '터미널 질문' } }) + '\n');
 
 const fake = makeFakeStreamClaude(path.join(root, '가짜'));
-const env = fake.env({ script: path.join(APP, 'test', 'fixtures', 'stream', '04-agents.jsonl') });
+const env = fake.env({ script: path.join(APP, 'test', 'fixtures', 'providers', 'claude', '2.1.323', '04-agents.jsonl') });
 const handler = createHandler({ cfgDir, env, claudeHome });
 const { server, port } = await listen(handler, 0);
 const base = `http://127.0.0.1:${port}`;
