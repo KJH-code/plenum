@@ -1,7 +1,7 @@
 // 3단계 채팅·세션·작동 중 공용 계약. 서버 모듈(chat·history·activity·terminal)과 웹이 같이 쓴다.
 // 이 파일을 바꾸면 모든 단위에 영향이 간다 — 단위 작업 중에는 필드를 "추가"만 하고 지우거나 이름을 바꾸지 않는다.
 //
-// 프로토콜 근거: test/fixtures/stream/*.jsonl (claude 2.1.323 녹화) + 노트북 2.1.248 사전 조사. 필드 대조는 fixtures/stream/README.md.
+// 프로토콜 근거: test/fixtures/providers/claude/2.1.323/*.jsonl (claude 2.1.323 녹화) + 노트북 2.1.248 사전 조사. 필드 대조는 fixtures/providers/claude/2.1.323/README.md.
 
 export const MIN_CLAUDE_VERSION = '2.1.248';
 

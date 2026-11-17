@@ -24,6 +24,7 @@ export const readMeta = (dir = CLAUDE_DIR): Meta => JSON.parse(fs.readFileSync(p
 export const SCENES: string[] = readMeta().scenes;
 export const scenePath = (scene: string, dir = CLAUDE_DIR) => path.join(dir, `${scene}.jsonl`);
 export const goldenPath = (scene: string, dir = CLAUDE_DIR) => path.join(dir, `${scene}.golden.json`);
+export const expectPath = (scene: string, dir = CLAUDE_DIR) => path.join(dir, `${scene}.expect.json`);
 
 export interface Replay { events: unknown[]; stdin: string[] }
 export interface Dump extends Replay { scene: string }
@@ -37,9 +38,9 @@ export function sameDump(actual: string, golden: string): boolean {
   return actual === golden;
 }
 
-type Item = { dir: 'in' | 'out' | 'exit'; msg?: any; code?: number };
-// 가짜와 같은 규칙으로 대본을 읽는다(인덱스가 맞아야 한다)
-function readScript(file: string): Item[] {
+export type Item = { dir: 'in' | 'out' | 'exit'; msg?: any; code?: number };
+// 가짜와 같은 규칙으로 대본을 읽는다(인덱스가 맞아야 한다). decode 단위 검사도 쓴다
+export function readScript(file: string): Item[] {
   return fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l))
     .filter((x: Item) => x.dir === 'in' || x.dir === 'out' || x.dir === 'exit');
 }
