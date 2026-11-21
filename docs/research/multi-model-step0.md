@@ -1160,6 +1160,7 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - 노트북: 파일 쓰기 승인 카드 → "이 세션 동안 허용" → **같은 파일** 다시 쓰기는 안 물음(파일 변경 `acceptForSession` 은 파일 단위 — 스키마 설명) (사람이 확인)
   - 노트북: 이어하기로 앞 대화 기억
   - Claude 계약 테스트의 unknown 래칫: 2.1.323 녹화의 unknown 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)를 매핑으로 줄이고 `UPDATE_EXPECT=1` 로 기준을 낮춘다
+  - Claude 드라이버의 중단 표시(`cancelled` 판정)는 result 를 받아야 내려간다. idle 중에 `interrupt()` 를 보내 result 가 안 오면 다음 턴의 `error_during_execution` 도 `cancelled` 로 판정된다. P1 화면은 subtype 원문을 써서 영향 없음 — stopReason 을 화면·워커 결과에 쓰기 시작할 때 표시를 내리는 시점(예: 다음 `prompt()` 가 idle 에서 나갈 때)을 정한다
 - 탐침 메모:
   - 노트북 ②에서 파일 쓰기 요청이 fileChange 가 아니라 commandExecution 승인(PowerShell Set-Content)으로 왔다 → 완료 기준의 "파일 쓰기 승인 카드" 장면은 그 경로도 포함
   - sandbox read-only 에서는 acceptForSession 을 해도 PermissionDenied 로 못 쓴다. 승인 ≠ 샌드박스 권한
