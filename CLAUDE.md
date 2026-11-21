@@ -28,6 +28,7 @@ DevVault: Projects/jh-kit
 - 설정 파일: `%APPDATA%\plenum\config.json` (그 밖 `~/.config/plenum`, 테스트는 `PLENUM_CONFIG_DIR`). 설치본은 `~/.claude/plugins/installed_plugins.json`(`CLAUDE_CONFIG_DIR`)
 
 ## 규칙
+- 일부러 망가뜨려 보는 검증(수정을 끄고 테스트가 실패하는지 보기 등)은 임시 브랜치 `claude/verify-<무엇>-<YYYYMMDD>`에서만 하고, 확인이 끝나면 바로 원격에서 지운다. 작업 브랜치·main 에는 검증 커밋을 올리지 않는다(노트북이 중간 상태를 받는다, 2026-11-21 재혁 결정)
 - 생성물은 결정적이어야 한다 (날짜·시각·정렬 안 된 순회 금지)
 - 머리말은 YAML로 다시 직렬화하지 않는다 (원문 줄 유지)
 - 컴파일러를 바꾸면 jh-kit 레포에서 `plenum-compile` 결과가 커밋된 `build/`와 같은지(또는 의도한 차이만 있는지) 확인한다. 태그를 올려야 kit 레포에 반영된다
