@@ -85,6 +85,7 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 
 ## 남은 일 (3단계 리뷰 하·노트북 확인, 0.3.x)
 - 끝난 채팅과 이벤트 버퍼가 서버가 도는 동안 메모리에 계속 남는다 — 개수·시간 상한을 두고 버리기
+- PowerShell 도구에서 세션 허용(addRules)이 안 먹는다: "이 세션 동안 허용" 뒤 글자까지 같은 명령에 카드가 또 뜬다(노트북 2026-11-21, claude 2.1.248, 0.3.1 에서도 재현). Bash 에서는 됐는지(녹화 01 은 Bash 로 확인), addRules 의 toolName·ruleContent 가 PowerShell 규칙 형식에 맞는지 확인 필요
 - 같은 프로젝트 동시 응답 경고가 아직 init 전(`starting`) 채팅과 훅으로 보이는 터미널 세션을 세지 않는다
 - `main.ts` 의 SIGINT·SIGHUP 연결(그리고 `node --import tsx` 신호 전달)을 자동 테스트로 검사하기(지금은 수동 측정만)
 - (0.3.x) 도구 한 줄 요약이 `command` 를 Bash 에서만 읽어 PowerShell 도구 줄이 "PowerShell" 만 나온다 — `command` 가 있는 도구는 다 명령을 붙이기(노트북 2026-11-15)

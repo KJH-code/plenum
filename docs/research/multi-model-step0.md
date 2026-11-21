@@ -1107,6 +1107,7 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - `git diff main -- app/web/` 비어 있음(화면 코드 안 바뀜)
   - 기준 덤프(`*.golden.json`)와 재생 결과 완전 일치
   - 노트북 회귀 절차: `docs/checks/p1-regression.md`
+  - 노트북 결과(2026-11-21, claude 2.1.248): 8개 중 7개 통과. ② 실패 — PowerShell 도구에서 세션 허용(addRules)이 안 먹음(같은 명령에 카드가 또 뜸). main 0.3.1 에서도 재현돼 P1 회귀가 아니라 원래 있던 버그. Bash 에서는 됐는지, addRules 의 toolName·ruleContent 가 PowerShell 규칙 형식에 맞는지 확인 필요(README "남은 일")
 
 ### P2. 프로바이더 설정·기능 감지 (동작 그대로)
 - 바꿀 파일: `app/server/provider/config.ts`(새: I절 스키마 로더 — 1단 앱 기본 + 2단 사용자 폴더 키 단위 덮어쓰기, 키별 검증), `app/providers/claude.json`(새: 지금 동작을 설정으로), `app/server/claudecaps.ts` → `app/server/provider/detect.ts`(일반화, 캐시 키 그대로), `app/test/providerconfig.test.ts`(새)
