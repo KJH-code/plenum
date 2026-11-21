@@ -685,6 +685,35 @@ export interface Driver {
 - 설정 파일의 `capabilities` 는 **상한**이다. 감지가 켜도 설정이 끄면 끈다. 감지가 못 찾으면 켜지 않고 경고를 낸다.
 - 최소 버전보다 낮거나, 알려진 최신 fixture 버전보다 **높으면** 경고("녹화 안 된 버전")만 내고 막지 않는다.
 
+### G.1 P1에서 더한 칸·바뀐 점 (동작 보존용)
+
+위 G절 초안과 실제 `app/server/provider/events.ts` 가 다른 점. 필수 = `?` 없는 칸(드라이버가 늘 채운다), 선택 = `?` 칸(없으면 안 붙인다).
+
+| 칸 | 필수/선택 | 타입 | 왜 |
+|---|---|---|---|
+| `SessionStartedEvent.version`, `permissionMode` | 필수 | `string \| null` | init 이벤트가 화면에 그대로 냄 |
+| `TurnEndEvent.rawSubtype`, `isError` | 필수 | `string`, `boolean` | result 이벤트가 하네스 subtype 원문을 화면에 냄(채팅 매니저는 `stopReason` 이 아니라 이 원문을 쓴다) |
+| `MessageEvent.index?` | 선택 | `number` | text-delta 의 content block index |
+| `ToolCallEvent.toolNameNotString?` | 선택 | `true` | 원래 `name` 이 문자열이 아니었음(`toolName` 은 `String(...)` 값). Skill 모드 감지는 원래 값이 문자열 `'Skill'` 일 때만 |
+| `UsageEvent.rejected?` | 선택 | `{ window: string; resetsAt: number \| null } \| null` | 한도 막기 규칙(창 이름 정렬 후 첫 rejected, 없으면 최상위 status·rateLimitType) |
+| `LimitWindow.rawStatus?` | 선택 | `string \| null` | 하네스 status 원문(`status` 는 ok·warning·rejected 로 좁힘). 화면의 창 status 는 원문 |
+| `PermissionRequestEvent.ext?` | 선택 | `{ claude: { sessionRules: { toolName; ruleContent? }[]; toolUseId?: string } }` | "이 세션 동안 허용"은 addRules 만 destination session 으로 보냄 |
+| `QuestionEvent.ext?` | 선택 | `{ claude: { toolUseId?: string } }` | 질문 카드의 toolUseId |
+| `SessionStartedEvent.noSessionId?` | 선택 | `true` | init 에 session_id 가 없을 때. 빈 문자열과 구분해 이전 세션 id 를 유지 |
+| `UnknownEvent.reply?` | 선택 | `unknown` | 답을 기다리는 요청에 드라이버가 만든 기본 거부 원문(`answeredWithDefault: true` 일 때) |
+| `UnknownEvent.requestId?` | 선택 | `string` | 그 요청의 id(안내 카드에 씀) |
+| `UnknownEvent.thrown?` | 선택 | `true` | decode 가 그 줄에서 예외를 잡았음(`reason: 'field'`). 그 줄이 `request_id` 문자열인 `control_request` 면 `reply`·`requestId`·`answeredWithDefault: true` 도 붙여 거부로 답한다(claude 가 기다리지 않게) |
+| `driver.stats()` | 드라이버(Claude) | `() => { thrown: number }` | decode 가 안에서 잡은 예외 수. 계약 테스트 (b) 가 fixture 전체 뒤 0 인지 본다 |
+| `Driver.initialize()`, `Driver.prompt(text)` | 필수 | `() => unknown`, `(text: string) => unknown` | 핸드셰이크·사용자 글의 원문 만들기 |
+| `Driver.detect?` | 선택으로 바뀜 | — | 기능 감지는 P2 에서 구현. P1 드라이버에는 없다 |
+
+그 밖의 규칙:
+- `raw`: 초안은 "모든 이벤트가 raw 를 들고 다닌다"였지만, P1 은 **unknown 에만** 붙인다(필수). 다른 이벤트의 `Base.raw?` 는 비워 둔다.
+- `seq`·`at`: 드라이버는 0 으로 둔다. 채팅 매니저(`chat.ts` emit)가 ChatEvent 로 바꿀 때 붙인다.
+- `stopReason` `cancelled`(Claude): 이번 턴에 드라이버가 `interrupt()` 원문을 만든 뒤 오는 result 가 `error_during_execution` 이면 `cancelled`. result 를 받으면 그 표시를 내린다(턴 경계). 표시 없이 온 `error_during_execution` 은 `error`.
+
+P1에서 unknown 이벤트는 만들되 화면·로그에는 아직 보내지 않는다(로그 파일은 P5).
+
 ## H. 형식 변화 감지
 
 세 겹으로 막는다. 겹마다 잡는 것이 다르다.
@@ -705,7 +734,8 @@ app/test/fixtures/providers/
       meta.json         # { provider, version, os, recordedAt(날짜만), command(argv, 경로 가림), scenes:[…] }
       help/claude.txt   # --help 전문
       01-cards.jsonl    # {"dir":"in"|"out"|"err"|"exit", "msg"|"text"}  (지금 stream/ 형식 그대로)
-      01-cards.expect.json   # decode 결과 요약(이벤트 type 순서, 카드 수, unknown 0) — 계약 테스트가 비교
+      01-cards.expect.json   # decode 결과 요약(이벤트 type 순서, 카드 수, stopReason, 창, unknown 수) — 계약 테스트가 비교(unknown 수는 래칫)
+      *.golden.json     # 리팩터 전 chat.ts 의 ChatEvent·stdin 덤프 — P1 계약 기준
     <노트북 버전>/      # 탐침이 2.1.248 이 아닌 버전을 만났을 때만 생김(녹화 4개 + compare.md).
                         # 2.1.248 원본 녹화는 남아 있지 않다 — 2.1.248 이면 help 만 들어간다
   codex/                # 경로 W1: codex exec --json (플러그인 워커가 씀)
@@ -726,7 +756,7 @@ app/test/fixtures/providers/
   _latest.json          # 경로별 "녹화된 최신 버전" — 감지가 이보다 높으면 경고
 ```
 
-- 지금 `app/test/fixtures/stream/` 은 `providers/claude/2.1.323/` 로 옮긴다(파일 이동만, 다음 단계 어댑터 단위에서).
+- 지금 `app/test/fixtures/stream/` 은 `providers/claude/2.1.323/` 로 옮겼다(P1)(파일 이동만).
 - 버전 폴더는 지우지 않는다. 옛 버전 해석이 계속 되는지가 하위 호환 검사다.
 - 개인 정보: 지금 `fixtures-privacy.test.ts` 가 `fixtures/` 아래를 재귀로 보므로 새 폴더도 자동으로 검사된다. Codex 녹화에서 추가로 막을 것: `~/.codex` 경로, `account_id`·`chatgpt_account_id`·`user_id`·`installationId` 칸, `serverName`(컴퓨터 이름), 요금제 칸(`planType`·`plan_type`·`planName`·`limitName` 값이 `PLAN` 이 아니면 실패). 탐침이 저장 전에 이미 가리지만, 검사기가 한 번 더 막는다(P3).
 
@@ -734,8 +764,8 @@ app/test/fixtures/providers/
 
 `app/test/contract.test.ts`(다음 단계) — fixture 폴더마다:
 1. 녹화 파일이 **1개 이상**이다(0개면 실패 — 조용히 통과 방지).
-2. `out` 줄을 순서대로 `driver.decode` 에 넣는다. **throw 0**.
-3. `unknown` 이 `expect.json` 에 적은 수를 넘지 않는다(새 이벤트를 발견하면 수를 올리는 게 아니라 매핑을 추가하고 기대값을 고친다).
+2. `out` 줄을 순서대로 `driver.decode` 에 넣는다. **예외 0** — decode 는 예외를 안에서 잡아 unknown 으로 바꾸므로 밖으로 나온 throw 가 아니라 드라이버의 예외 카운터(`stats().thrown`)와 unknown 의 `thrown` 표시가 0 인지 본다.
+3. 장면별 `unknown` 수는 `expect.json` 값을 넘으면 실패(래칫). 같거나 줄면 통과하고, 줄었으면 "expect 갱신 가능" 경고를 낸다. 2.1.323 녹화 기준 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)는 기준으로 두고, 매핑으로 줄이는 일은 P5 몫. 나머지 요약 칸은 정확히 비교한다(type 순서는 `unknown` 을 뺀 순서).
 4. 장면별 핵심 단언: 승인 카드 수, scope `session` 인 허용 옵션 유무(kind 가 아니라 D.4 표로 판정), 질문 카드 수, `turnEnd.stopReason`, 사용량 창 이름.
 5. `in` 줄 재생: 앱이 그 시점에 보낼 답(`answerPermission` 등)을 만들어 녹화된 `in` 과 **모양**(키 집합·타입)이 같은지 비교한다. 이게 "우리가 보낸 답을 그 버전 CLI 가 받았다"의 근거다.
 6. 매핑 표 도달 계측: 드라이버의 매핑 분기마다 카운터를 두고, fixture 전체를 돌린 뒤 한 번도 안 닿은 분기 목록을 출력한다(실패는 아님, 목록이 길어지면 녹화가 부족하다는 신호).
@@ -773,7 +803,7 @@ jobs:
 | `codex-exec` | **W1** 플러그인 워커 | `@openai/codex` | **명령별로 따로**: `codex exec --help`, `codex exec resume --help` | `exec`: `--json`, `--sandbox`(값 `read-only`·`workspace-write`), `-o/--output-last-message`, `--skip-git-repo-check`, `-C`, `-m`, `-c`. `exec resume`: `--json`, `--last`, `-m`, `-c` (resume 에는 `--sandbox`·`-C` 가 없으므로 검사하지 않는다). 이벤트 줄 모양(`thread.started`·`turn.completed`·`item.*`)은 CI 가 못 받으므로 녹화 계약 테스트가 맡음 | `codex/<버전>/help/` |
 | `codex-app-server` | **W2 아래층** | `@openai/codex` — codex-acp 가 묶은 버전(`^0.166.0` 안의 최신)과 npm 최신 **둘 다** | `codex app-server generate-json-schema` | 메서드 `thread/start`·`turn/start`·`turn/interrupt`·`thread/resume`, 서버 요청 `item/commandExecution/requestApproval`·`item/fileChange/requestApproval`·`item/tool/requestUserInput`, 결정 값 `accept`·`acceptForSession`·`decline`·`cancel`, `RateLimitWindow.{usedPercent,windowDurationMins,resetsAt}` 중 하나라도 사라짐 | `codex-app-server/<버전>/schema/` |
 | `codex-acp` | **W2** Plenum ↔ 어댑터 | `@agentclientprotocol/codex-acp` | `npm pack` 으로 받은 tarball 의 `package.json`(묶인 `@openai/codex` 범위)과 **번들 `dist/index.js`** | D.4 표의 optionId 문자열(`"allow_for_session"` 등, 따옴표 포함) 중 하나라도 번들에서 **못 찾으면 실패**. 번들 파일 자체가 없거나 이름이 바뀌어도 실패. 표에 없는 새 id 는 번들 문자열로는 가려낼 수 없으므로 감시하지 않는다 — 실행 중 `unknown` optionId 경고(G절)가 맡는다. 묶인 codex 범위가 바뀌면 `codex-app-server` 를 그 버전으로 한 번 더 | `codex-acp/<버전>/meta.json` |
-| `codex-home` | **W1·W2 공유 상태** | (설치 없음 — 위 두 항목의 버전 비교) | `codex-exec` 의 버전과 `codex-acp` 가 묶은 codex 버전 | 두 경로는 같은 `~/.codex`(설정 `config.toml`, 로그인 `auth.json`, 세션 기록 `sessions/`, 규칙 `rules/`)를 쓴다. **W1 은 설치된 codex(지금 0.169.0), W2 는 어댑터가 묶은 codex(0.166.x)** 라 한쪽이 새 형식으로 쓴 파일을 다른 쪽이 못 읽을 수 있다(예: 0.169.0 의 `migrate-rollouts` 로 바뀌는 세션 기록 형식). 두 버전의 마이너가 다르면 **경고**를 내고 요약에 "W1·W2 codex 버전 차이 0.169 ↔ 0.166" 을 남긴다. 실패로 치는 것: 한쪽 help 에 `migrate-*` 같은 저장 형식 이전 명령이 새로 생김 | `codex-home/_versions.json` |
+| `codex-home` | **W1·W2 공유 상태** | (설치 없음 — 위 두 항목의 버전 비교) | `codex-exec` 의 버전과 `codex-acp` 가 묶은 codex 버전 | 두 경로는 같은 `~/.codex`(설정 `config.toml`, 로그인 `auth.json`, 세션 기록 `sessions/`, 규칙 `rules/`)를 쓴다. **W1 은 설치된 codex(지금 0.169.0), W2 는 어댑터가 묶은 codex(0.166.x)** 라 한쪽이 새 형식으로 쓴 파일을 다른 쪽이 못 읽을 수 있다(예: 0.169.0 의 `migrate-rollouts` 로 바뀌는 세션 기록 형식). 두 버전의 마이너가 다르면 **경고**를 내고 요약에 "W1·W2 codex 버전 차이 0.169 ↔ 0.166" 을 남긴다. 실패로 치는 것: 한쪽 help 에 `migrate-*` 같은 저장 형식 이전 명령이 새로 생김. Codex 데스크톱 앱(노트북 26.1111)도 같은 `~/.codex` 를 쓸 수 있다 → 데스크톱 앱 버전도 기록 | `codex-home/_versions.json` |
 | `acp-schema` | W2 공통 | `@agentclientprotocol/sdk` | 패키지의 `schema/v1/schema.json` | `session/request_permission`·`elicitation/create`·`session/cancel`·`session/load`, `PermissionOptionKind` 값, elicitation 응답 `action` 값 중 하나라도 사라짐. 프로토콜 정수 버전 1 이 없어지면 실패 | `acp/<버전>/schema.json` |
 
 순서: 각 항목의 `latest` 를 `npm view` 로 보고 `_latest.json` 보다 새 버전이면 임시 폴더에 설치(`npm i --prefix`) → 위 "받는 것"을 저장 → 기준과 비교. 플래그는 글자 diff 가 아니라 **플래그 집합**, 스키마는 **메서드·타입 필드 집합**으로 비교한다(설명 문구 변화는 무시). 실패면 작업이 빨간 불, 성공해도 새 버전이 있으면 요약에 "녹화 필요 — 노트북 탐침"을 남긴다.
@@ -1067,14 +1097,17 @@ Claude 메인과 Codex 워커가 같은 지침을 쓰려면 AGENTS.md 하나를 
 
 jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 Plenum 만. 순서는 P1 → P2 → (P3 ∥ P4) → P5 → P6. 각 단위는 **동작을 바꾸지 않는 것(P1·P2·P3)** 과 **새 기능(P4~P6)** 으로 나뉜다.
 
-### P1. 어댑터 층 — 이벤트 모델 도입 (동작 그대로)
+### P1. 어댑터 층 — 이벤트 모델 도입 (동작 그대로) — 완료(작업 브랜치, PR 검토 중)
 - 바꿀 파일: `app/server/provider/events.ts`(새, G절 타입), `app/server/provider/claude.ts`(새: `chat.ts` 의 줄 해석을 `decode(raw) → ProviderEvent[]` 로 옮김), `app/server/chat.ts`(해석 대신 `decode` 호출 + 내부 이벤트 → 지금 `ChatEvent` 로 다시 펼침), `app/test/fixtures/stream/` → `app/test/fixtures/providers/claude/2.1.323/`(이동 + `meta.json`), `app/test/contract.test.ts`(새), 기존 테스트의 fixture 경로
 - 목표: 화면·SSE·API 모양은 한 글자도 안 바뀌고, Claude 해석이 드라이버 하나로 모인다. 모르는 이벤트는 `unknown` 으로 남고 throw 하지 않는다
 - 완료 기준:
   - `cd app && npm test` 전부 통과(0.3.0 의 276개 + 새 계약 테스트), `npm run typecheck` 0 오류
-  - `cd app && npx vitest run test/contract.test.ts` — fixture 폴더 ≥1, 모든 `out` 줄 decode throw 0, `unknown` 수 = `expect.json` 값
+  - `cd app && npx vitest run test/contract.test.ts` — fixture 폴더 ≥1, 모든 `out` 줄 decode 예외 0(`stats().thrown`), 장면별 `unknown` 수는 `expect.json` 값을 넘으면 실패(래칫). 2.1.323 녹화 기준 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)는 기준으로 두고, 매핑으로 줄이는 일은 P5 몫
   - `cd app && npm run e2e` 9+19 흐름 통과(지금과 같음)
   - `git diff main -- app/web/` 비어 있음(화면 코드 안 바뀜)
+  - 기준 덤프(`*.golden.json`)와 재생 결과 완전 일치
+  - 노트북 회귀 절차: `docs/checks/p1-regression.md`
+  - 노트북 결과(2026-11-21, claude 2.1.248): 8개 중 7개 통과. ② 실패 — PowerShell 도구에서 세션 허용(addRules)이 안 먹음(같은 명령에 카드가 또 뜸). main 0.3.1 에서도 재현돼 P1 회귀가 아니라 원래 있던 버그. Bash 에서는 됐는지, addRules 의 toolName·ruleContent 가 PowerShell 규칙 형식에 맞는지 확인 필요(README "남은 일")
 
 ### P2. 프로바이더 설정·기능 감지 (동작 그대로)
 - 바꿀 파일: `app/server/provider/config.ts`(새: I절 스키마 로더 — 1단 앱 기본 + 2단 사용자 폴더 키 단위 덮어쓰기, 키별 검증), `app/providers/claude.json`(새: 지금 동작을 설정으로), `app/server/claudecaps.ts` → `app/server/provider/detect.ts`(일반화, 캐시 키 그대로), `app/test/providerconfig.test.ts`(새)
@@ -1099,6 +1132,11 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - `cd app && npx vitest run test/fixtures-privacy.test.ts` — `"plan_type": "plus"`, `\"planType\":\"pro\"` 를 넣은 임시 fixture 가 실패
   - `ls tools/probe/probe.ps1 tools/probe/probe.mjs tools/probe/lib` 존재, `node --check tools/probe/*.mjs tools/probe/lib/*.mjs` 통과
   - GitHub Actions `workflow_dispatch` 1회 실행 성공(ubuntu·windows), 비밀 변수 참조 0(`grep -n secrets .github/workflows/provider-drift.yml` 비어 있음)
+- 탐침 메모(노트북 2026-11-16):
+  - redact 규칙 추가: 경로의 `Users\\<U+FFFD 여러 개>` → `Users\\hong` (노트북 결과에서 손으로 가림)
+  - redact 규칙 추가: account/rateLimits 응답의 `RateLimitResetCredit_<hex>` id → `RateLimitResetCredit_REDACTED` (손으로 가림)
+  - 임시 폴더 삭제가 EPERM 으로 한 번 실패했고, 그 오류 메시지에 사용자 이름이 Latin-1 로 깨진 형태로 남았다. 지금 가리기 규칙이 이 형태를 못 잡는다 → 가리기 추가
+  - 탐침이 "claude mcp Examples:" 를 하위 명령으로 잘못 읽음 → help 재귀 수집 수정
 
 ### P4. Codex 녹화 fixture 넣기 (탐침 결과)
 - 바꿀 파일: `app/test/fixtures/providers/codex/<노트북 버전>/`(W1 녹화 ①④·help), `app/test/fixtures/providers/codex-app-server/<노트북 버전>/`(②③⑤⑥·스키마), `.../expect.json`, (claude 버전이 달랐다면) `app/test/fixtures/providers/claude/<버전>/`
@@ -1108,6 +1146,11 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - 탐침 `redaction-report.txt` 가 "남은 것 없음"
   - `grep -rniE '(plan_?type|plan_?name|limit_?name|chatgptPlanType)\\?"[[:space:]]*:[[:space:]]*\\?"[^P\\]' app/test/fixtures/providers` 출력 없음(보조 검사. 주 검사는 P3 의 privacy 테스트)
   - (P5 전에는) 계약 테스트가 codex 폴더를 "드라이버 없음 — 건너뜀" 으로 표시하고 실패하지 않음
+- 탐침 메모:
+  - 노트북 codex 는 0.166.0(npm, ChatGPT 로그인)이다 — codex-acp 에 묶인 버전과 같다. 이 문서의 `codex/0.169.0`·`codex-app-server/0.169.0` 폴더 이름은 클라우드 설치 기준 가정이었다. 실제 넣을 폴더 이름은 P4에서 노트북 버전으로 정한다
+  - 노트북 claude 2.1.248
+  - ④ 이어하기(같은 세션 id), ⑤ 중단(interrupted), app-server 핸드셰이크(0.166 스키마) 모두 정상
+  - Codex 가 PowerShell 출력(CP949)을 UTF-8 로 읽어 한글 메시지와 경로가 U+FFFD 로 깨진다(복구 불가). 실행할 때 출력 인코딩을 맞추는 법(예: 실행 전 코드 페이지·`[Console]::OutputEncoding`)은 조사 항목이다 — 효과는 아직 확인 전
 
 ### P5. 범용 ACP 드라이버 + Codex 연결
 - 바꿀 파일: `app/server/provider/acp.ts`(새: initialize·session/new·load·prompt·update·request_permission·elicitation·cancel, v1 만. scope 는 P3 의 `codex.options.json` 으로), `app/providers/codex.json`(I.3 예시 1), `app/server/provider/config.ts`(1단·2단 합치기), `app/server/chat.ts`(드라이버 선택), `app/test/fakeacp.ts`(새: 가짜 ACP 에이전트), `app/test/acp.test.ts`(새)
@@ -1117,6 +1160,11 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - 노트북: Codex 채팅에서 셸 명령 승인 카드 → "이 세션 동안 허용" → **같은 명령**이 다시 안 물음, 다른 명령은 물음 (사람이 확인)
   - 노트북: 파일 쓰기 승인 카드 → "이 세션 동안 허용" → **같은 파일** 다시 쓰기는 안 물음(파일 변경 `acceptForSession` 은 파일 단위 — 스키마 설명) (사람이 확인)
   - 노트북: 이어하기로 앞 대화 기억
+  - Claude 계약 테스트의 unknown 래칫: 2.1.323 녹화의 unknown 103개(system 하위 이벤트·`active_goal`·`autocompact_state`)를 매핑으로 줄이고 `UPDATE_EXPECT=1` 로 기준을 낮춘다
+  - Claude 드라이버의 중단 표시(`cancelled` 판정)는 result 를 받아야 내려간다. idle 중에 `interrupt()` 를 보내 result 가 안 오면 다음 턴의 `error_during_execution` 도 `cancelled` 로 판정된다. P1 화면은 subtype 원문을 써서 영향 없음 — stopReason 을 화면·워커 결과에 쓰기 시작할 때 표시를 내리는 시점(예: 다음 `prompt()` 가 idle 에서 나갈 때)을 정한다
+- 탐침 메모:
+  - 노트북 ②에서 파일 쓰기 요청이 fileChange 가 아니라 commandExecution 승인(PowerShell Set-Content)으로 왔다 → 완료 기준의 "파일 쓰기 승인 카드" 장면은 그 경로도 포함
+  - sandbox read-only 에서는 acceptForSession 을 해도 PermissionDenied 로 못 쓴다. 승인 ≠ 샌드박스 권한
 
 ### P6. UI — 프로바이더·모델 선택, 역할 표시
 - 바꿀 파일: `app/web/src/`(새 채팅 시작 화면의 프로바이더·모델·노력 선택, 설정 › 프로바이더 목록: 감지 버전·기능·역할(메인/워커)·로그인 상태), `app/server/` 의 목록 API, `app/e2e/`
@@ -1125,4 +1173,5 @@ jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 
   - `cd app && npm run e2e` 새 흐름(프로바이더 고르기, 원문 보기 펼치기) 통과, `npm test` 대비 테스트(contrast) 통과
   - 로그인 안 된 프로바이더는 시작 버튼 대신 `loginHint` 문장
   - `npm run screens` 다크 스크린샷에 프로바이더 목록 화면 추가
+- 탐침 메모: 승인 카드에 샌드박스 상태 표시(승인과 샌드박스 권한은 별개 — P5 메모)
 

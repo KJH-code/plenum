@@ -1,0 +1,28 @@
+{
+  "provider": "claude",
+  "version": "2.1.323",
+  "os": "linux",
+  "recordedAt": "2026-11-13",
+  "command": [
+    "claude",
+    "-p",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--permission-prompt-tool",
+    "stdio",
+    "--model",
+    "haiku"
+  ],
+  "scenes": [
+    "01-cards",
+    "02-resume",
+    "03-mode",
+    "04-agents",
+    "05-interrupt",
+    "06-slash-stdin-close"
+  ]
+}

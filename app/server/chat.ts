@@ -1,6 +1,6 @@
 // 프로젝트 창 안 채팅: `claude -p` stream-json 프로세스를 띄우고 stdout 줄을 ChatEvent 로 바꾼다.
-// 질문·승인(can_use_tool)은 카드로 내보내고, 답은 control_response 로 stdin 에 돌려준다.
-// 줄 모양 근거: test/fixtures/stream/*.jsonl (진짜 claude 녹화). 모르는 줄은 무시한다(죽지 않기).
+// 줄 해석과 stdin 답 원문은 드라이버(provider/claude.ts)가 한다. 여기는 드라이버의 내부 이벤트를 지금의 ChatEvent·Card 로 펼치고
+// 프로세스·상태·저장을 맡는다. 줄 모양 근거: test/fixtures/providers/claude/2.1.323/*.jsonl (진짜 claude 녹화). 모르는 줄(unknown)은 무시한다(죽지 않기).
 import { spawn, type ChildProcess } from 'node:child_process';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -8,13 +8,18 @@ import { StringDecoder } from 'node:string_decoder';
 import {
   MIN_CLAUDE_VERSION, modeFromAnswer, modeFromSkill,
   type Card, type CardReply, type ChatConflict, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
-  type ModeName, type Question, type SessionRule, type WorkerRun, limitGate,
+  type ModeName, type WorkerRun, limitGate,
 } from './chatTypes.ts';
+import { createClaudeDriver, limitsFromUsage, type ClaudeDriver } from './provider/claude.ts';
+import type { ProviderEvent } from './provider/events.ts';
 import { claudeCaps, type ClaudeCaps } from './claudecaps.ts';
 import { UserError } from './errors.ts';
 import { commandFor, resolveCommand } from './open.ts';
 import { addPid, killTree, killTreeNow, ownerStartTime, removePid } from './proc.ts';
 import { readLimits, saveLimits, updateSession } from './store.ts';
+
+// 드라이버로 옮긴 것. 옛 위치(chat.ts)의 공개 export 를 유지한다 — 지금 저장소 안에서 여기로 import 하는 곳은 없다
+export { DENIED, parseLimits } from './provider/claude.ts';
 
 export interface ChatDeps {
   terminalAlive(sessionId: string): boolean;
@@ -72,7 +77,7 @@ export function compareVersion(a: string, b: string): number {
   return 0;
 }
 
-interface PendingCard { card: Card; input: unknown; resolved: boolean }
+interface PendingCard { card: Card; resolved: boolean }
 interface Chat {
   info: ChatInfo;
   projectId: string;
@@ -81,84 +86,13 @@ interface Chat {
   listeners: Set<(ev: ChatEvent) => void>;
   cards: Map<string, PendingCard>;
   workers: Map<string, WorkerRun>;
-  taskToTool: Map<string, string>;
-  lastMessageId: string | null;
-  intN: number;
+  driver: ClaudeDriver;
   closing: Promise<void> | null;
   exited: Promise<void>;
   stderr: string;
 }
 
 const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
-const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
-
-function toolResultText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.map((c) => (isObj(c) && typeof c.text === 'string' ? c.text : '')).filter(Boolean).join('\n');
-  return '';
-}
-
-function workerEnd(status: unknown): 'done' | 'error' | null {
-  if (status === 'completed') return 'done';
-  if (status === 'failed' || status === 'killed' || status === 'error') return 'error';
-  return null;
-}
-
-function limitWindow(w: unknown): LimitWindow | undefined {
-  if (!isObj(w) || typeof w.utilization !== 'number') return undefined;
-  return { pct: Math.round(w.utilization * 1000) / 10, resetsAt: typeof w.resetsAt === 'number' ? w.resetsAt : null, status: str(w.status) };
-}
-
-export function parseLimits(info: unknown, now = Date.now()): Limits | null {
-  if (!isObj(info)) return null;
-  const uw = isObj(info.unifiedWindows) ? info.unifiedWindows : {};
-  const limits: Limits = { fiveHour: limitWindow(uw.five_hour), sevenDay: limitWindow(uw.seven_day), receivedAt: now, rejected: null };
-  for (const name of Object.keys(uw).sort()) {
-    const w = uw[name];
-    if (isObj(w) && w.status === 'rejected') { limits.rejected = { window: name, resetsAt: typeof w.resetsAt === 'number' ? w.resetsAt : null }; break; }
-  }
-  if (!limits.rejected && info.status === 'rejected') {
-    limits.rejected = { window: str(info.rateLimitType) ?? 'unknown', resetsAt: typeof info.resetsAt === 'number' ? info.resetsAt : null };
-  }
-  return limits;
-}
-
-function questionsFrom(input: unknown): Question[] {
-  const qs = isObj(input) && Array.isArray(input.questions) ? input.questions : [];
-  return qs.filter(isObj).map((q) => ({
-    question: String(q.question ?? ''),
-    ...(typeof q.header === 'string' ? { header: q.header } : {}),
-    multiSelect: !!q.multiSelect,
-    options: (Array.isArray(q.options) ? q.options : []).filter(isObj).map((o: any) => ({
-      label: String(o.label ?? ''),
-      ...(typeof o.description === 'string' ? { description: o.description } : {}),
-      recommended: /\((추천|Recommended)\)/i.test(String(o.label ?? '')),
-    })),
-  }));
-}
-
-function diffFrom(toolName: string, input: unknown): { path: string; old: string; new: string } | undefined {
-  if (!isObj(input)) return undefined;
-  const p = String(input.file_path ?? '');
-  if (toolName === 'Edit') return { path: p, old: String(input.old_string ?? ''), new: String(input.new_string ?? '') };
-  if (toolName === 'Write') return { path: p, old: '', new: String(input.content ?? '') };
-  if (toolName === 'MultiEdit') {
-    const edits = Array.isArray(input.edits) ? input.edits.filter(isObj) : [];
-    return { path: p, old: edits.map((e: any) => String(e.old_string ?? '')).join('\n'), new: edits.map((e: any) => String(e.new_string ?? '')).join('\n') };
-  }
-  return undefined;
-}
-
-function sessionRulesFrom(suggestions: unknown): SessionRule[] {
-  const out: SessionRule[] = [];
-  for (const s of Array.isArray(suggestions) ? suggestions : []) {
-    if (!isObj(s) || s.type !== 'addRules' || !Array.isArray(s.rules)) continue;
-    for (const r of s.rules) {
-      if (isObj(r) && typeof r.toolName === 'string') out.push({ toolName: r.toolName, ...(typeof r.ruleContent === 'string' ? { ruleContent: r.ruleContent } : {}) });
-    }
-  }
-  return out;
-}
 
 // 플러그인 스킬 파일(프로젝트 밖) 읽기는 묻지 않는다. Read 만 — 쓰기·실행은 그대로 카드로 묻는다.
 // claude 2.1.323 으로 확인: 이 규칙이 있으면 그 경로 Read 카드가 안 뜨고, 없으면 뜬다
@@ -183,8 +117,6 @@ export function pluginCacheRule(platform: NodeJS.Platform, homedir: string, conf
   if (!configDir.startsWith('/') || configDir.startsWith('//')) return null; // 상대 경로·// 로 시작하는 이상한 경로
   return rule('', configDir);
 }
-// 거부 deny message 머리. "훅이 막았다"로 읽히지 않게(2.1.248 haiku) 사람이 거부했다고 못 박는다
-export const DENIED = '사용자가 직접 거부했다(훅 아님)';
 
 // claude 실행 인자 (테스트가 모양을 본다). env 는 CLAUDE_CONFIG_DIR 만 본다
 export function chatArgs(o: { model?: string; effort?: string; resume?: string }, env: NodeJS.ProcessEnv = {},
@@ -281,145 +213,119 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     if (warnings.includes(LIMIT_UNKNOWN_RESET)) emit(c, { type: 'notice', level: 'warn', code: 'limit-rejected', message: LIMIT_UNKNOWN_RESET });
   }
   function sendUser(c: Chat, text: string) {
-    write(c, { type: 'user', message: { role: 'user', content: text } });
+    write(c, c.driver.prompt(text));
     emit(c, { type: 'user', text });
   }
 
   function updateWorker(c: Chat, w: WorkerRun) { c.workers.set(w.id, w); emit(c, { type: 'worker', worker: { ...w } }); }
 
+  // stdout 한 줄 → 드라이버 decode → 이벤트마다 apply
   function onLine(c: Chat, line: string) {
-    let m: any;
-    try { m = JSON.parse(line); } catch { return; }
-    if (!isObj(m)) return;
-    switch (m.type) {
-      case 'system': return onSystem(c, m);
-      case 'stream_event': {
-        const e = m.event;
-        if (!isObj(e) || m.parent_tool_use_id != null) return;
-        if (e.type === 'message_start' && isObj(e.message) && typeof e.message.id === 'string') c.lastMessageId = e.message.id;
-        if (e.type === 'content_block_delta' && isObj(e.delta) && e.delta.type === 'text_delta' && typeof e.delta.text === 'string') {
-          const messageId = str(m.api_message_id) ?? c.lastMessageId;
-          if (messageId) emit(c, { type: 'text-delta', messageId, index: Number(e.index) || 0, text: e.delta.text });
+    for (const ev of c.driver.decode({ provider: 'claude', version: c.info.version, channel: 'stdout', text: line })) apply(c, ev);
+  }
+
+  // 내부 이벤트 → 지금의 ChatEvent·Card·상태·저장 (옮기기 전 onLine·onSystem·onControlRequest 와 같은 순서)
+  function apply(c: Chat, ev: ProviderEvent) {
+    switch (ev.type) {
+      case 'sessionStarted': {
+        const sid = ev.noSessionId ? null : ev.sessionId;
+        const version = ev.version;
+        c.info.sessionId = sid ?? c.info.sessionId;
+        c.info.version = version;
+        c.info.model = ev.model ?? c.info.model;
+        emit(c, { type: 'init', sessionId: sid ?? '', version, model: ev.model, permissionMode: ev.permissionMode });
+        if (version && compareVersion(version, MIN_CLAUDE_VERSION) < 0) {
+          emit(c, { type: 'notice', level: 'warn', code: 'version-old', message: `claude ${version} 은 ${MIN_CLAUDE_VERSION} 보다 옛 버전이다 — 카드가 제대로 안 나올 수 있다. claude update 를 권한다` });
         }
+        if (sid) { try { updateSession(cfgDir, sid, { version, plenum: true, projectId: c.projectId }); } catch { /* 무시 */ } }
+        if (c.info.state === 'starting') setState(c, 'running');
         return;
       }
-      case 'assistant': {
-        const msg = m.message;
-        if (!isObj(msg) || !Array.isArray(msg.content)) return;
-        const parent = str(m.parent_tool_use_id);
-        for (const b of msg.content) {
-          if (!isObj(b)) continue;
-          if (b.type === 'text' && typeof b.text === 'string' && parent === null && typeof msg.id === 'string') {
-            emit(c, { type: 'assistant-text', messageId: msg.id, text: b.text });
-          } else if (b.type === 'tool_use' && typeof b.id === 'string') {
-            emit(c, { type: 'tool', toolUseId: b.id, name: String(b.name ?? ''), input: b.input, parentToolUseId: parent });
-            if (b.name === 'Skill' && isObj(b.input)) {
-              const mode = modeFromSkill(b.input.skill);
-              if (mode) setMode(c, mode);
-            }
+      case 'task': {
+        const id = ev.parentToolCallId;
+        if (!id) return;
+        let w = c.workers.get(id);
+        if (!w) {
+          const type = ev.name ?? '';
+          w = {
+            id, worker: type, model: type ? deps.workerModel(type) : null,
+            description: ev.description, background: ev.background, state: 'running', startedAt: Date.now(), endedAt: null,
+          };
+          updateWorker(c, w);
+        }
+        const end = ev.status === 'completed' ? 'done' : ev.status === 'failed' ? 'error' : null;
+        if (end && w.state === 'running') updateWorker(c, { ...w, state: end, endedAt: Date.now() });
+        return;
+      }
+      case 'message':
+        if (ev.phase === 'chunk') emit(c, { type: 'text-delta', messageId: ev.messageId, index: ev.index ?? 0, text: ev.text });
+        else emit(c, { type: 'assistant-text', messageId: ev.messageId, text: ev.text });
+        return;
+      case 'toolCall':
+        if (ev.status === 'pending') {
+          emit(c, { type: 'tool', toolUseId: ev.toolCallId, name: ev.toolName ?? '', input: ev.rawInput, parentToolUseId: ev.parentToolCallId ?? null });
+          // 원래 name 이 문자열 'Skill' 일 때만(옛 코드 b.name === 'Skill'). ["Skill"] 같은 값은 String() 으로 같아져도 아니다
+          if (ev.toolName === 'Skill' && !ev.toolNameNotString && isObj(ev.rawInput)) {
+            const mode = modeFromSkill(ev.rawInput.skill);
+            if (mode) setMode(c, mode);
           }
+        } else if (ev.output) {
+          emit(c, { type: 'tool-result', toolUseId: ev.toolCallId, isError: ev.output.isError, text: ev.output.text });
         }
         return;
-      }
-      case 'user': {
-        const content = isObj(m.message) ? m.message.content : null;
-        if (!Array.isArray(content)) return;
-        for (const b of content) {
-          if (isObj(b) && b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
-            emit(c, { type: 'tool-result', toolUseId: b.tool_use_id, isError: !!b.is_error, text: toolResultText(b.content).slice(0, 2000) });
-          }
-        }
+      case 'elicitation': {
+        const questions = ev.questions.map(({ allowFreeText: _f, ...q }) => q);
+        const toolUseId = ev.ext?.claude.toolUseId;
+        const card: Card = { kind: 'question', requestId: ev.requestId, ...(toolUseId ? { toolUseId } : {}), questions, isModeQuestion: questions.some((q) => q.options.some((op) => /^모드 없음/.test(op.label.trim()))) };
+        addCard(c, card);
         return;
       }
-      case 'control_request': return onControlRequest(c, m);
-      case 'rate_limit_event': {
-        const l = parseLimits(m.rate_limit_info);
-        if (!l) return;
+      case 'requestPermission': {
+        const toolUseId = ev.ext?.claude.toolUseId;
+        const diff = ev.diff?.[0];
+        const card: Card = {
+          kind: 'permission', requestId: ev.requestId, ...(toolUseId ? { toolUseId } : {}), toolName: ev.toolCall.toolName ?? '', input: ev.toolCall.rawInput,
+          ...(typeof ev.reason === 'string' ? { description: ev.reason } : {}),
+          sessionRules: ev.ext?.claude.sessionRules ?? [],
+          ...(diff ? { diff } : {}),
+        };
+        addCard(c, card);
+        return;
+      }
+      case 'usage': {
+        const l = limitsFromUsage(ev);
         limits = l;
         try { saveLimits(cfgDir, l); } catch { /* 설정 폴더 문제로 채팅을 멈추지 않는다 */ }
         emit(c, { type: 'limits', limits: l });
         if (l.rejected) emit(c, { type: 'notice', level: 'warn', code: 'limit-rejected', message: `사용 한도에 걸렸다 (${l.rejected.window})` });
         return;
       }
-      case 'result': {
-        emit(c, {
-          type: 'result', subtype: String(m.subtype ?? ''), isError: !!m.is_error,
-          text: str(m.result), denials: Array.isArray(m.permission_denials) ? m.permission_denials.length : 0,
-        });
+      case 'turnEnd':
+        emit(c, { type: 'result', subtype: ev.rawSubtype, isError: ev.isError, text: ev.text, denials: ev.deniedCount ?? 0 });
         // 턴이 끝났으니 claude 가 더 기다리지 않는다
         cancelPending(c);
         setState(c, 'idle');
         return;
+      case 'unknown': {
+        // 답을 기다리는 모르는 요청만(decode 가 예외를 잡은 control_request 도 같다): 드라이버가 만든 거절 답을 쓰고 터미널로 열기 안내.
+        // 그 밖의 unknown 은 버린다(P1)
+        if (!ev.answeredWithDefault || ev.requestId === undefined) return;
+        const requestId = ev.requestId;
+        try { write(c, ev.reply); } catch { /* 끝남 */ }
+        const subtype = ev.hint ?? '';
+        const card: Card = { kind: 'unknown', requestId, subtype, version: c.info.version };
+        c.cards.set(requestId, { card, resolved: true });
+        emit(c, { type: 'card', card });
+        emit(c, { type: 'notice', level: 'warn', code: 'unknown-request', message: `처리하지 못하는 요청(${subtype})이 와서 거절했다 — 터미널로 열어서 이어 하기` });
+        return;
       }
-      default: return;
+      default:
+        return;
     }
   }
 
-  function onSystem(c: Chat, m: any) {
-    if (m.subtype === 'init') {
-      const sid = str(m.session_id);
-      const version = str(m.claude_code_version);
-      c.info.sessionId = sid ?? c.info.sessionId;
-      c.info.version = version;
-      c.info.model = str(m.model) ?? c.info.model;
-      emit(c, { type: 'init', sessionId: sid ?? '', version, model: str(m.model), permissionMode: str(m.permissionMode) });
-      if (version && compareVersion(version, MIN_CLAUDE_VERSION) < 0) {
-        emit(c, { type: 'notice', level: 'warn', code: 'version-old', message: `claude ${version} 은 ${MIN_CLAUDE_VERSION} 보다 옛 버전이다 — 카드가 제대로 안 나올 수 있다. claude update 를 권한다` });
-      }
-      if (sid) { try { updateSession(cfgDir, sid, { version, plenum: true, projectId: c.projectId }); } catch { /* 무시 */ } }
-      if (c.info.state === 'starting') setState(c, 'running');
-      return;
-    }
-    if (m.subtype === 'task_started' || m.subtype === 'task_progress' || m.subtype === 'task_updated' || m.subtype === 'task_notification') {
-      const taskId = str(m.task_id);
-      const id = str(m.tool_use_id) ?? (taskId ? c.taskToTool.get(taskId) ?? null : null);
-      if (!id) return;
-      if (taskId) c.taskToTool.set(taskId, id);
-      let w = c.workers.get(id);
-      if (!w) {
-        const type = str(m.subagent_type) ?? '';
-        w = {
-          id, worker: type, model: type ? deps.workerModel(type) : null,
-          description: m.subtype === 'task_started' ? str(m.description) : null,
-          background: !!m.is_backgrounded, state: 'running', startedAt: Date.now(), endedAt: null,
-        };
-        updateWorker(c, w);
-      }
-      const end = m.subtype === 'task_updated' ? workerEnd(isObj(m.patch) ? m.patch.status : null)
-        : m.subtype === 'task_notification' ? workerEnd(m.status) : null;
-      if (end && w.state === 'running') updateWorker(c, { ...w, state: end, endedAt: Date.now() });
-    }
-  }
-
-  function onControlRequest(c: Chat, m: any) {
-    const requestId = str(m.request_id);
-    const req = m.request;
-    if (!requestId || !isObj(req)) return;
-    if (req.subtype !== 'can_use_tool') {
-      try { write(c, { type: 'control_response', response: { subtype: 'error', request_id: requestId, error: 'Plenum 채팅이 처리하지 못하는 요청' } }); } catch { /* 끝남 */ }
-      const subtype = String(req.subtype ?? '');
-      const card: Card = { kind: 'unknown', requestId, subtype, version: c.info.version };
-      c.cards.set(requestId, { card, input: null, resolved: true });
-      emit(c, { type: 'card', card });
-      emit(c, { type: 'notice', level: 'warn', code: 'unknown-request', message: `처리하지 못하는 요청(${subtype})이 와서 거절했다 — 터미널로 열어서 이어 하기` });
-      return;
-    }
-    const toolName = String(req.tool_name ?? '');
-    const toolUseId = str(req.tool_use_id) ?? undefined;
-    let card: Card;
-    if (toolName === 'AskUserQuestion') {
-      const questions = questionsFrom(req.input);
-      card = { kind: 'question', requestId, ...(toolUseId ? { toolUseId } : {}), questions, isModeQuestion: questions.some((q) => q.options.some((op) => /^모드 없음/.test(op.label.trim()))) };
-    } else {
-      const diff = diffFrom(toolName, req.input);
-      card = {
-        kind: 'permission', requestId, ...(toolUseId ? { toolUseId } : {}), toolName, input: req.input,
-        ...(typeof req.description === 'string' ? { description: req.description } : {}),
-        sessionRules: sessionRulesFrom(req.permission_suggestions),
-        ...(diff ? { diff } : {}),
-      };
-    }
-    c.cards.set(requestId, { card, input: req.input, resolved: false });
+  function addCard(c: Chat, card: Card) {
+    c.cards.set(card.requestId, { card, resolved: false });
     emit(c, { type: 'card', card });
     setState(c, 'waiting');
   }
@@ -484,8 +390,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     let resolveExited!: () => void;
     const c: Chat = {
       info: { chatId, projectId: project.id, sessionId: resume ?? null, state: 'starting', mode: null, model: model ?? null, effort: effort ?? null, version: null, lastSeq: 0 },
-      projectId: project.id, child, events: [], listeners: new Set(), cards: new Map(), workers: new Map(), taskToTool: new Map(),
-      lastMessageId: null, intN: 0, closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
+      projectId: project.id, child, events: [], listeners: new Set(), cards: new Map(), workers: new Map(),
+      driver: createClaudeDriver(), closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
     };
     chats.set(chatId, c);
     if (child.pid) { try { addPid(cfgDir, child.pid, { platform }).catch(() => {}); } catch { /* 무시 */ } }
@@ -526,7 +432,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       child.once('close', () => { clearTimeout(t); done(); });
     });
 
-    write(c, { type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } });
+    write(c, c.driver.initialize());
     sendUser(c, text);
     warnLimit(c, limitWarnings);
     const warnings = [...limitWarnings, ...concurrent(c)];
@@ -542,24 +448,24 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     if (c.info.state === 'ended') throw new UserError(409, '채팅이 끝났다', ENDED);
     if (p.resolved) throw new UserError(409, '이미 답한 카드', CARD_ANSWERED);
     const card = p.card;
-    let response: Record<string, unknown>;
+    let msg: unknown;
     let outcome: 'allow' | 'allow-session' | 'deny' | 'answered';
     let detail: string | undefined;
     switch (reply.action) {
       case 'allow':
-        response = { behavior: 'allow', updatedInput: p.input };
+        msg = c.driver.answerPermission(reply.requestId, { outcome: 'selected', optionId: 'allow_once' });
         outcome = 'allow';
         break;
       case 'allow-session': {
         if (card.kind !== 'permission' || card.sessionRules.length === 0) throw new UserError(400, '이 세션 동안 허용할 규칙이 없다');
-        response = { behavior: 'allow', updatedInput: p.input, updatedPermissions: [{ type: 'addRules', rules: card.sessionRules, behavior: 'allow', destination: 'session' }] };
+        msg = c.driver.answerPermission(reply.requestId, { outcome: 'selected', optionId: 'allow_session' });
         outcome = 'allow-session';
         break;
       }
       case 'deny': {
         const reason = typeof reply.reason === 'string' ? reply.reason.trim() : '';
-        // "사용자가" 를 밝힌다 — 그냥 message 만 주면 Claude 가 훅이 막은 것으로 이해했다(노트북 2.1.248)
-        response = { behavior: 'deny', message: reason ? `${DENIED}. 이유: ${reason}` : `${DENIED}.` };
+        // 거부 문구("사용자가 직접 거부했다")는 드라이버가 붙인다
+        msg = c.driver.answerPermission(reply.requestId, { outcome: 'selected', optionId: 'reject_once', ...(reason ? { message: reason } : {}) });
         outcome = 'deny';
         detail = reason || undefined;
         break;
@@ -568,7 +474,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
         if (card.kind !== 'question') throw new UserError(400, '질문 카드가 아니다');
         const answers = reply.answers;
         if (!isObj(answers) || Object.values(answers).some((v) => typeof v !== 'string')) throw new UserError(400, 'answers 는 질문 → 답 글자');
-        response = { behavior: 'allow', updatedInput: { ...(isObj(p.input) ? p.input : {}), answers } };
+        msg = c.driver.answerQuestion(reply.requestId, { action: 'accept', answers });
         outcome = 'answered';
         detail = Object.keys(answers).sort().map((k) => answers[k]).join(', ');
         break;
@@ -576,7 +482,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       default:
         throw new UserError(400, `모르는 action: ${String((reply as any).action)}`);
     }
-    write(c, { type: 'control_response', response: { subtype: 'success', request_id: reply.requestId, response } });
+    write(c, msg);
     p.resolved = true;
     emit(c, { type: 'card-resolved', requestId: reply.requestId, outcome, ...(detail !== undefined ? { detail } : {}) });
     if (reply.action === 'answer' && card.kind === 'question' && card.isModeQuestion) {
@@ -611,8 +517,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
 
   function interrupt(chatId: string): ChatInfo {
     const c = must(chatId);
-    c.intN++;
-    write(c, { type: 'control_request', request_id: `int-${c.intN}`, request: { subtype: 'interrupt' } });
+    write(c, c.driver.interrupt());
     return info(c);
   }
 

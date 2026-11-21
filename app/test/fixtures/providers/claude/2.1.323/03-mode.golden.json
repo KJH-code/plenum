@@ -1,0 +1,648 @@
+{
+  "scene": "03-mode",
+  "events": [
+    {
+      "type": "state",
+      "state": "starting",
+      "seq": 1,
+      "at": 0
+    },
+    {
+      "type": "user",
+      "text": "README.md 첫 줄을 \"# fake project\" 로 바꿔줘",
+      "seq": 2,
+      "at": 0
+    },
+    {
+      "type": "init",
+      "sessionId": "2959b2b6-a31f-48da-9570-a6e50a9ab788",
+      "version": "2.1.323",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "default",
+      "seq": 3,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "running",
+      "seq": 4,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "이",
+      "seq": 5,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": " 작업은 파",
+      "seq": 6,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "일을 수정하는 ",
+      "seq": 7,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "요",
+      "seq": 8,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "청이라",
+      "seq": 9,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": " 시",
+      "seq": 10,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "작 ",
+      "seq": 11,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "전에 모드를 정",
+      "seq": 12,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "해야",
+      "seq": 13,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": " 합니다. 한 ",
+      "seq": 14,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "줄",
+      "seq": 15,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "짜리 변경이라",
+      "seq": 16,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": " 메인 세",
+      "seq": 17,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "션이 직접 처",
+      "seq": 18,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "리하는 \"모드 ",
+      "seq": 19,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": "없음\"을",
+      "seq": 20,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "index": 1,
+      "text": " 추천합니다.",
+      "seq": 21,
+      "at": 0
+    },
+    {
+      "type": "assistant-text",
+      "messageId": "msg_011Cgz73t6cNAUF6dvhkvw2D",
+      "text": "이 작업은 파일을 수정하는 요청이라 시작 전에 모드를 정해야 합니다. 한 줄짜리 변경이라 메인 세션이 직접 처리하는 \"모드 없음\"을 추천합니다.",
+      "seq": 22,
+      "at": 0
+    },
+    {
+      "type": "tool",
+      "toolUseId": "toolu_01Xg84wzUapgEUar2RxjGm3K",
+      "name": "AskUserQuestion",
+      "input": {
+        "questions": [
+          {
+            "question": "README.md 첫 줄을 \"# fake project\"로 바꾸는 작업을 어떤 모드로 진행할까요?",
+            "header": "모드",
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "모드 없음 (추천)",
+                "description": "메인 세션이 직접 한 줄 수정합니다. 이 정도 변경에 가장 적합합니다."
+              },
+              {
+                "label": "절약 (lite)",
+                "description": "한도를 가장 적게 쓰는 설정으로 돌립니다. 이 작업에는 과합니다."
+              },
+              {
+                "label": "기본 (orchestrate)",
+                "description": "인터뷰·지시서·검수를 거치는 표준 절차입니다."
+              },
+              {
+                "label": "더 높은 모드",
+                "description": "강화·최대·극한 중에서 고르는 2차 질문으로 넘어갑니다."
+              }
+            ]
+          }
+        ]
+      },
+      "parentToolUseId": null,
+      "seq": 23,
+      "at": 0
+    },
+    {
+      "type": "card",
+      "card": {
+        "kind": "question",
+        "requestId": "d84b96fb-4d26-4ecc-9cb5-f0cfaf4a908f",
+        "toolUseId": "toolu_01Xg84wzUapgEUar2RxjGm3K",
+        "questions": [
+          {
+            "question": "README.md 첫 줄을 \"# fake project\"로 바꾸는 작업을 어떤 모드로 진행할까요?",
+            "header": "모드",
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "모드 없음 (추천)",
+                "description": "메인 세션이 직접 한 줄 수정합니다. 이 정도 변경에 가장 적합합니다.",
+                "recommended": true
+              },
+              {
+                "label": "절약 (lite)",
+                "description": "한도를 가장 적게 쓰는 설정으로 돌립니다. 이 작업에는 과합니다.",
+                "recommended": false
+              },
+              {
+                "label": "기본 (orchestrate)",
+                "description": "인터뷰·지시서·검수를 거치는 표준 절차입니다.",
+                "recommended": false
+              },
+              {
+                "label": "더 높은 모드",
+                "description": "강화·최대·극한 중에서 고르는 2차 질문으로 넘어갑니다.",
+                "recommended": false
+              }
+            ]
+          }
+        ],
+        "isModeQuestion": true
+      },
+      "seq": 24,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "waiting",
+      "seq": 25,
+      "at": 0
+    },
+    {
+      "type": "card-resolved",
+      "requestId": "d84b96fb-4d26-4ecc-9cb5-f0cfaf4a908f",
+      "outcome": "answered",
+      "detail": "모드 없음 (추천)",
+      "seq": 26,
+      "at": 0
+    },
+    {
+      "type": "mode",
+      "mode": "모드 없음",
+      "seq": 27,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "running",
+      "seq": 28,
+      "at": 0
+    },
+    {
+      "type": "limits",
+      "limits": {
+        "fiveHour": {
+          "pct": 4,
+          "resetsAt": 1794548400,
+          "status": "allowed"
+        },
+        "sevenDay": {
+          "pct": 28,
+          "resetsAt": 1794801600,
+          "status": "allowed"
+        },
+        "receivedAt": 0,
+        "rejected": null
+      },
+      "seq": 29,
+      "at": 0
+    },
+    {
+      "type": "tool-result",
+      "toolUseId": "toolu_01Xg84wzUapgEUar2RxjGm3K",
+      "isError": false,
+      "text": "Your questions have been answered: \"README.md 첫 줄을 \"# fake project\"로 바꾸는 작업을 어떤 모드로 진행할까요?\"=\"모드 없음 (추천)\". You can now continue with these answers in mind.",
+      "seq": 30,
+      "at": 0
+    },
+    {
+      "type": "tool",
+      "toolUseId": "toolu_01Ci9i2vPbZ3sLr24dh2JiRf",
+      "name": "Bash",
+      "input": {
+        "command": "head -n 3 README.md && git status --short",
+        "description": "Show README first lines and git status"
+      },
+      "parentToolUseId": null,
+      "seq": 31,
+      "at": 0
+    },
+    {
+      "type": "tool-result",
+      "toolUseId": "toolu_01Ci9i2vPbZ3sLr24dh2JiRf",
+      "isError": false,
+      "text": "# fake\n?? README.md\n?? c.txt\n?? d.txt",
+      "seq": 32,
+      "at": 0
+    },
+    {
+      "type": "tool",
+      "toolUseId": "toolu_014At99bPtGWbyLJx8xWJ7Yc",
+      "name": "Read",
+      "input": {
+        "file_path": "/tmp/plenum-rec-홍길동-AbCdEf/README.md"
+      },
+      "parentToolUseId": null,
+      "seq": 33,
+      "at": 0
+    },
+    {
+      "type": "tool-result",
+      "toolUseId": "toolu_014At99bPtGWbyLJx8xWJ7Yc",
+      "isError": false,
+      "text": "1\t# fake\n2\t",
+      "seq": 34,
+      "at": 0
+    },
+    {
+      "type": "tool",
+      "toolUseId": "toolu_012qZGqsNh2fA4bsEDfgDAz1",
+      "name": "Edit",
+      "input": {
+        "replace_all": false,
+        "file_path": "/tmp/plenum-rec-홍길동-AbCdEf/README.md",
+        "old_string": "# fake\n",
+        "new_string": "# fake project\n"
+      },
+      "parentToolUseId": null,
+      "seq": 35,
+      "at": 0
+    },
+    {
+      "type": "card",
+      "card": {
+        "kind": "permission",
+        "requestId": "80be317e-11f8-4063-9135-bf3dc0f855ad",
+        "toolUseId": "toolu_012qZGqsNh2fA4bsEDfgDAz1",
+        "toolName": "Edit",
+        "input": {
+          "file_path": "/tmp/plenum-rec-홍길동-AbCdEf/README.md",
+          "old_string": "# fake\n",
+          "new_string": "# fake project\n",
+          "replace_all": false
+        },
+        "description": "README.md",
+        "sessionRules": [],
+        "diff": {
+          "path": "/tmp/plenum-rec-홍길동-AbCdEf/README.md",
+          "old": "# fake\n",
+          "new": "# fake project\n"
+        }
+      },
+      "seq": 36,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "waiting",
+      "seq": 37,
+      "at": 0
+    },
+    {
+      "type": "card-resolved",
+      "requestId": "80be317e-11f8-4063-9135-bf3dc0f855ad",
+      "outcome": "allow",
+      "seq": 38,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "running",
+      "seq": 39,
+      "at": 0
+    },
+    {
+      "type": "tool-result",
+      "toolUseId": "toolu_012qZGqsNh2fA4bsEDfgDAz1",
+      "isError": false,
+      "text": "The file /tmp/plenum-rec-홍길동-AbCdEf/README.md has been updated successfully. (file state is current in your context — no need to Read it back)",
+      "seq": 40,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "README.md의",
+      "seq": 41,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": " 첫 줄을 ",
+      "seq": 42,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "`# fake project",
+      "seq": 43,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "`로 바",
+      "seq": 44,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "꿨습니다. 기",
+      "seq": 45,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "존 내용은 `",
+      "seq": 46,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "# fake`",
+      "seq": 47,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": " 한 줄이었고",
+      "seq": 48,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": ", 나머지 줄",
+      "seq": 49,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "은 그",
+      "seq": 50,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "대로 두",
+      "seq": 51,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "었",
+      "seq": 52,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "습니다.\n\n모드는",
+      "seq": 53,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": " \"",
+      "seq": 54,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "모드 없음\"",
+      "seq": 55,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "으로 진행했습니",
+      "seq": 56,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "다. 커밋은",
+      "seq": 57,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": " 요",
+      "seq": 58,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "청이",
+      "seq": 59,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": " 없어",
+      "seq": 60,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "서 하지 않았고",
+      "seq": 61,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": ",",
+      "seq": 62,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": " README.md는 아",
+      "seq": 63,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "직 untracked 상",
+      "seq": 64,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "index": 0,
+      "text": "태입니다.",
+      "seq": 65,
+      "at": 0
+    },
+    {
+      "type": "assistant-text",
+      "messageId": "msg_011Cgz74Ru3ggqacxAFU6cUd",
+      "text": "README.md의 첫 줄을 `# fake project`로 바꿨습니다. 기존 내용은 `# fake` 한 줄이었고, 나머지 줄은 그대로 두었습니다.\n\n모드는 \"모드 없음\"으로 진행했습니다. 커밋은 요청이 없어서 하지 않았고, README.md는 아직 untracked 상태입니다.",
+      "seq": 66,
+      "at": 0
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "isError": false,
+      "text": "README.md의 첫 줄을 `# fake project`로 바꿨습니다. 기존 내용은 `# fake` 한 줄이었고, 나머지 줄은 그대로 두었습니다.\n\n모드는 \"모드 없음\"으로 진행했습니다. 커밋은 요청이 없어서 하지 않았고, README.md는 아직 untracked 상태입니다.",
+      "denials": 0,
+      "seq": 67,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "idle",
+      "seq": 68,
+      "at": 0
+    },
+    {
+      "type": "exit",
+      "code": 0,
+      "signal": null,
+      "seq": 69,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "ended",
+      "seq": 70,
+      "at": 0
+    }
+  ],
+  "stdin": [
+    "{\"type\":\"control_request\",\"request_id\":\"init-1\",\"request\":{\"subtype\":\"initialize\"}}",
+    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"README.md 첫 줄을 \\\"# fake project\\\" 로 바꿔줘\"}}",
+    "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"d84b96fb-4d26-4ecc-9cb5-f0cfaf4a908f\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"questions\":[{\"question\":\"README.md 첫 줄을 \\\"# fake project\\\"로 바꾸는 작업을 어떤 모드로 진행할까요?\",\"header\":\"모드\",\"options\":[{\"label\":\"모드 없음 (추천)\",\"description\":\"메인 세션이 직접 한 줄 수정합니다. 이 정도 변경에 가장 적합합니다.\"},{\"label\":\"절약 (lite)\",\"description\":\"한도를 가장 적게 쓰는 설정으로 돌립니다. 이 작업에는 과합니다.\"},{\"label\":\"기본 (orchestrate)\",\"description\":\"인터뷰·지시서·검수를 거치는 표준 절차입니다.\"},{\"label\":\"더 높은 모드\",\"description\":\"강화·최대·극한 중에서 고르는 2차 질문으로 넘어갑니다.\"}],\"multiSelect\":false}],\"answers\":{\"README.md 첫 줄을 \\\"# fake project\\\"로 바꾸는 작업을 어떤 모드로 진행할까요?\":\"모드 없음 (추천)\"}}}}}",
+    "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"80be317e-11f8-4063-9135-bf3dc0f855ad\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"file_path\":\"/tmp/plenum-rec-홍길동-AbCdEf/README.md\",\"old_string\":\"# fake\\n\",\"new_string\":\"# fake project\\n\",\"replace_all\":false}}}}"
+  ]
+}

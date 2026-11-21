@@ -1,0 +1,106 @@
+{
+  "scene": "02-resume",
+  "events": [
+    {
+      "type": "state",
+      "state": "starting",
+      "seq": 1,
+      "at": 0
+    },
+    {
+      "type": "user",
+      "text": "Which file did I choose earlier? One word.",
+      "seq": 2,
+      "at": 0
+    },
+    {
+      "type": "init",
+      "sessionId": "b5b49096-5604-499f-a80b-49f35d8d09bb",
+      "version": "2.1.323",
+      "model": "claude-haiku-5-5",
+      "permissionMode": "default",
+      "seq": 3,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "running",
+      "seq": 4,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz7F99o3ypEX58Cq1M2Y",
+      "index": 1,
+      "text": "a",
+      "seq": 5,
+      "at": 0
+    },
+    {
+      "type": "text-delta",
+      "messageId": "msg_011Cgz7F99o3ypEX58Cq1M2Y",
+      "index": 1,
+      "text": ".txt",
+      "seq": 6,
+      "at": 0
+    },
+    {
+      "type": "assistant-text",
+      "messageId": "msg_011Cgz7F99o3ypEX58Cq1M2Y",
+      "text": "a.txt",
+      "seq": 7,
+      "at": 0
+    },
+    {
+      "type": "limits",
+      "limits": {
+        "fiveHour": {
+          "pct": 4,
+          "resetsAt": 1794548400,
+          "status": "allowed"
+        },
+        "sevenDay": {
+          "pct": 28,
+          "resetsAt": 1794801600,
+          "status": "allowed"
+        },
+        "receivedAt": 0,
+        "rejected": null
+      },
+      "seq": 8,
+      "at": 0
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "isError": false,
+      "text": "a.txt",
+      "denials": 0,
+      "seq": 9,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "idle",
+      "seq": 10,
+      "at": 0
+    },
+    {
+      "type": "exit",
+      "code": 0,
+      "signal": null,
+      "seq": 11,
+      "at": 0
+    },
+    {
+      "type": "state",
+      "state": "ended",
+      "seq": 12,
+      "at": 0
+    }
+  ],
+  "stdin": [
+    "{\"type\":\"control_request\",\"request_id\":\"init-1\",\"request\":{\"subtype\":\"initialize\"}}",
+    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Which file did I choose earlier? One word.\"}}"
+  ]
+}

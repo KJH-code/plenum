@@ -1,5 +1,5 @@
 // 지난 세션 목록·기록 (server/history.ts). 진짜 기록 fixture 를 한글·공백 이름 임시 폴더로 복사해서 쓴다.
-// fixture: test/fixtures/history/projects (claude 2.1.323). AbCdEf 폴더 세션 5개 + 하위 에이전트, AbCdEg 폴더 1개(stream 01-cards·02-resume 세션).
+// fixture: test/fixtures/history/projects (claude 2.1.323). AbCdEf 폴더 세션 5개 + 하위 에이전트, AbCdEg 폴더 1개(providers/claude/2.1.323 01-cards·02-resume 세션).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

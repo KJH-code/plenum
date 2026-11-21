@@ -1,0 +1,21 @@
+{
+  "types": [
+    "unknown",
+    "unknown",
+    "unknown",
+    "unknown",
+    "sessionStarted",
+    "unknown",
+    "unknown",
+    "unknown",
+    "turnEnd"
+  ],
+  "permissionCards": 0,
+  "questionCards": 0,
+  "sessionScopeOption": false,
+  "stopReasons": [
+    "cancelled"
+  ],
+  "windows": [],
+  "unknown": 7
+}

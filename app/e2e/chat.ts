@@ -1,5 +1,5 @@
 // 프로젝트 창 채팅 흐름 (실패하면 종료 코드 1, 스크린샷을 남긴다).
-// 가짜 claude(stream 모드)로 진짜 녹화(test/fixtures/stream)를 재생한다. 진짜 claude·~/.claude 는 건드리지 않는다.
+// 가짜 claude(stream 모드)로 진짜 녹화(test/fixtures/providers/claude/2.1.323)를 재생한다. 진짜 claude·~/.claude 는 건드리지 않는다.
 // 쓰는 법: npm run e2e  (vite build 뒤 flows.ts 다음에 돈다)  ·  따로: npx tsx e2e/chat.ts
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
