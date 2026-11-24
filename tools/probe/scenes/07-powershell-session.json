@@ -1,0 +1,21 @@
+{
+  "scene": "07-powershell-session",
+  "model": "haiku",
+  "workdir": { "under": "tmp", "name": "plenum-rec-홍길동-{rand}", "sub": "proj" },
+  "turns": [
+    {
+      "prompt": "No mode questions, do not use Skill.\nUse the PowerShell tool, not Bash. Run each step as its own tool call, with the command exactly as written:\n1) New-Item -ItemType File -Force .\\ps-a.txt\n2) the same exact command as step 1 again\n3) New-Item -ItemType File -Force .\\ps-b.txt\n4) New-Item -ItemType File -Force $env:TEMP\\plenum-ps-x.txt\n5) the same exact command as step 4 again\n6) New-Item -ItemType File -Force '{TMP}\\plenum-ps-y.txt'\n7) the same exact command as step 6 again\nDo not save anything to files or memory except these commands. Then reply DONE and, for each step, whether you were asked for permission."
+    }
+  ],
+  "answers": [
+    { "match": "ps-a.txt", "nth": 1, "optionId": "allow_session" },
+    { "match": "ps-a.txt", "optionId": "allow_once" },
+    { "match": "ps-b.txt", "optionId": "allow_once" },
+    { "match": "plenum-ps-x.txt", "nth": 1, "optionId": "allow_session" },
+    { "match": "plenum-ps-x.txt", "optionId": "allow_once" },
+    { "match": "plenum-ps-y.txt", "nth": 1, "optionId": "allow_session" },
+    { "match": "plenum-ps-y.txt", "optionId": "allow_once" }
+  ],
+  "defaultAnswer": "reject_once",
+  "timeoutMs": 240000
+}

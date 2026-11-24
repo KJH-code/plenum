@@ -15,7 +15,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "screens": "vite build && tsx e2e/screens.ts",
-    "e2e": "vite build && tsx e2e/flows.ts && tsx e2e/chat.ts"
+    "e2e": "vite build && tsx e2e/flows.ts && tsx e2e/chat.ts",
+    "probe": "node --import tsx ../tools/probe/record.ts",
+    "probe:redact": "node --import tsx ../tools/probe/redact.ts",
+    "probe:scan": "node --import tsx ../tools/probe/scan.ts"
   },
   "dependencies": {
     "react": "18.3.1",
