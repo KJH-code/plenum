@@ -374,7 +374,7 @@ for (const mode of MODES) describe(`push 거부${mode.name}`, () => {
 describe('미리보기·열기', () => {
   test('preview: diff 줄·커밋 메시지·authorEmail, 레포에 안 쓴다', async () => {
     const { kr, srv } = await setup();
-    kr.git('config', 'user.email', 'jaehyuk@example.com');
+    kr.git('config', 'user.email', 'gapdol@example.com');
     const r = await srv.call('POST', '/api/kit/preview', { worker: 'impl', model: 'opus', effort: 'xhigh' });
     expect(r.status).toBe(200);
     expect(r.body).toEqual({
@@ -388,7 +388,7 @@ describe('미리보기·열기', () => {
         ] },
       ],
       commitMessage: 'impl: model sonnet → opus, effort medium → xhigh (0.0.2)',
-      authorEmail: 'jaehyuk@example.com',
+      authorEmail: 'gapdol@example.com',
       newVersion: '0.0.2',
       from: { model: 'sonnet', effort: 'medium' },
       kitYamlEdited: false,
