@@ -7,7 +7,7 @@ import { buildContext, findRisks, mergeMeta, redactLine, redactLines, redactStri
 import { commandOf, fillPrompt, outcomeOf, parseArgs, parseScene, pickPermission, pickQuestion, psQuoteInner, randToken, workdirOf, writeIn } from '../../tools/probe/record.ts';
 import { EMPTY_WORDS, mojibakeVariants, wordsGate } from '../../tools/probe/variants.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { formsOf, parseArgs as scanParseArgs, scanFile, scanLog } from '../../tools/probe/scan.ts';
+import { byteFormsOf, formsOf, parseArgs as scanParseArgs, parseLsTree, scanFile, scanLog, wordShape } from '../../tools/probe/scan.ts';
 import os from 'node:os';
 
 const WIN = { env: { USERPROFILE: 'C:\\Users\\갑돌' }, homedir: 'C:\\Users\\갑돌', tmpdir: 'C:\\Users\\갑돌\\AppData\\Local\\Temp' };
@@ -315,7 +315,9 @@ describe('review 2차 반례', () => {
   test('H2: 5번째 깨진 형태(CP949→UTF-8, U+FFFD 섞임)를 치환·검사, 홈 자리에 오면 홍길동', () => {
     // 갑돌: CP949 바이트를 UTF-8 로 읽으면 U+FFFD 뿐 → 낱말 형태에서 빠진다(정보 없음). 갑돌이네: 섞인 꼴이라 남는다
     expect(mojibakeVariants('갑돌').variants.some((v) => v.includes('\uFFFD'))).toBe(false);
-    expect(mojibakeVariants('갑돌이네').variants.some((v) => v.includes('\uFFFD') && !/^\uFFFD*$/.test(v))).toBe(true);
+    // 갑돌이네: CP949→UTF-8 은 U+FFFD 아닌 글자가 1개뿐 → 뺀다(형태 5 는 그런 글자가 2개 이상일 때만). 홍길동: 2개라 남는다
+    expect(mojibakeVariants('갑돌이네').variants.some((v) => v.includes('\uFFFD'))).toBe(false);
+    expect(mojibakeVariants('홍길동').variants.some((v) => v.includes('\uFFFD') && [...v].filter((c) => c !== '\uFFFD').length >= 2)).toBe(true);
     const hong = mojibakeVariants('홍길동').variants;
     const mixed = hong[hong.length - 1];
     expect(mixed).toContain('\uFFFD');
@@ -342,59 +344,128 @@ describe('review 2차 반례', () => {
   });
 });
 
+describe('review 3차 반례', () => {
+  const PX = { homedir: '/home/hong', tmpdir: '/tmp' };
+  test('긴 사용자 이름부터: USERNAME=Kim + 폴더 Kim Gapdol 등이 통째로 홍길동, 검사 0건', () => {
+    const cases: [string, string][] = [['Kim', 'Kim Gapdol'], ['Gapdol', 'Gapdol Kim'], ['gapdol', 'gapdol (old)']];
+    for (const [user, folder] of cases) {
+      const ctx = buildContext({ ...PX, env: { USERNAME: user, USERPROFILE: `C:\\Users\\${folder}` }, platform: 'win32' });
+      expect(ctx.winNames[0], folder).toBe(folder);
+      for (const sep of ['\\', '\\\\', '/']) {
+        const r = redactString(`cwd C:${sep}Users${sep}${folder}${sep}proj`, ctx);
+        expect(r, `${folder} ${sep}`).toBe(`cwd C:${sep}Users${sep}홍길동${sep}proj`);
+        expect(findRisks(r, ctx), `${folder} ${sep}`).toEqual([]);
+      }
+      const bare = redactString(`login ${user}, folder ${folder}.`, ctx);
+      expect(findRisks(bare, ctx), bare).toEqual([]);
+    }
+  });
+
+  test('이름 끝에 U+FFFD 가 이어지면 이름의 일부: U+FFFD·깨진 형태로만 된 이름만 치환, 섞이면 막힘', () => {
+    const ctx = buildContext({ ...PX, env: { USERPROFILE: 'C:\\Users\\Ab' } });
+    const F = '\uFFFD';
+    const mixed = redactString(`C:\\Users\\${F}${F}ab\\x`, ctx);
+    expect(mixed).toBe(`C:\\Users\\${F}${F}ab\\x`);
+    expect(findRisks(mixed, ctx)).toEqual(['홍길동 아닌 Windows 사용자 폴더(Windows 사용자 폴더)']);
+    const tail = redactString(`C:\\Users\\Ab${F}\\x`, ctx);
+    expect(tail).toBe(`C:\\Users\\Ab${F}\\x`);                 // Ab 만 바꾸고 U+FFFD 를 남기지 않는다
+    expect(findRisks(tail, ctx).length).toBeGreaterThan(0);
+    expect(findRisks(`C:\\Users\\홍길동${F}\\x`, ctx).length).toBeGreaterThan(0);
+    expect(redactString(`C:\\Users\\${F}${F}\\x`, ctx)).toBe('C:\\Users\\홍길동\\x');
+  });
+});
+
 describe('scan', () => {
   const words = ['zorblax', '갑돌'];
   const forms = formsOf(words);
+  const { forms: bforms } = byteFormsOf(words);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plenum-scan-홍길동-'));
   const repo = path.join(tmp, '레포');
   const g = (...a: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', `core.hooksPath=${path.join(tmp, 'nohooks')}`, ...a], {
     cwd: repo, env: { ...process.env, GIT_AUTHOR_NAME: 'A', GIT_AUTHOR_EMAIL: 'a@example.invalid', GIT_COMMITTER_NAME: 'C', GIT_COMMITTER_EMAIL: 'c@example.invalid' },
   }).toString('utf8');
+  const put = (rel: string, data: string | Buffer) => { fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true }); fs.writeFileSync(path.join(repo, rel), data); };
   fs.mkdirSync(repo);
   g('init', '-q');
-  fs.writeFileSync(path.join(repo, 'clean.txt'), 'nothing here\n');
+  put('clean.txt', 'nothing here\n');
+  put('app/test/fixtures/providers/claude/9.9.9/ok.jsonl', '{"a":"홍길동"}\n');
   g('add', '.'); g('commit', '-q', '-m', 'first');
   const base = g('rev-parse', 'HEAD').trim();
-  fs.writeFileSync(path.join(repo, 'a.txt'), 'line1\nhello ZorBlax\n');
+  put('a.txt', 'line1\nhello ZorBlax\n');
+  put('gone.txt', 'x\n갑돌\n');                                         // HEAD 에만 남기고 디스크에서 지운다
+  put('u16.txt', Buffer.from('xx 갑돌 yy', 'utf16le'));                     // UTF-16LE
+  put('cp949.txt', Buffer.concat([Buffer.from('name='), Buffer.from([0xb0, 0xa9, 0xb5, 0xb9]), Buffer.from('\n')]));   // CP949 원본 두 글자
+  put('esc.json', '{"n":"\\uAC11\\uB3CC"}\n');                                // JSON 이스케이프(대문자 hex)
+  put('app/test/fixtures/providers/claude/9.9.9/bom.jsonl', '\uFEFF{"a":1}\n');    // fail-closed
   g('add', '.'); g('commit', '-q', '-m', 'second 갑돌');
   const second = g('rev-parse', 'HEAD').trim().slice(0, 12);
-  // 작업 트리: 깨진 형태만 있는 파일(커밋 안 함은 ls-files 밖 → add 만), 바이너리
-  fs.writeFileSync(path.join(repo, '한글.txt'), `x\ny\n${mojibakeVariants('갑돌').variants[0]}\n`);
-  fs.writeFileSync(path.join(repo, 'bin.dat'), Buffer.from([0, 1, 2, ...Buffer.from('zorblax')]));
-  g('add', '한글.txt', 'bin.dat');
+  fs.rmSync(path.join(repo, 'gone.txt'));
   const run = (args: string[], w: string) => spawnSync(process.execPath, ['--import', 'tsx', '../tools/probe/scan.ts', ...args],
     { cwd: APP, env: { ...process.env, PLENUM_PRIVATE_WORDS: w }, encoding: 'utf8', timeout: 60000 });
 
-  test('순수 함수: log 의 커밋·diff 파일, 트리의 파일:줄, 경로 이름 가림, 바이너리 건너뜀', () => {
-    expect(forms.map((f) => `${f.word}/${f.form}`).slice(0, 2)).toEqual(['1/1', '2/1']);
+  test('순수 함수: log 의 커밋·diff 파일, 블롭의 파일:줄, 경로 이름 가림, 바이트 형태, 모양 요약', () => {
+    expect(forms.filter((f) => f.word === 1).length).toBe(1);
+    expect(forms.filter((f) => f.word === 2).map((f) => f.text)).toContain('\\uac11\\ub3cc');
+    expect(bforms.map((f) => `${f.word}/${f.kind}`)).toEqual(['1/utf8', '1/utf16le', '2/utf8', '2/utf16le', '2/cp949']);
     const log = `commit ${'a'.repeat(40)}\nAuthor: x zorblax\n\n    msg\ndiff --git a/p.txt b/p.txt\n+갑돌\ndiff --git a/zorblax.txt b/zorblax.txt\n+ok\n`;
     expect(scanLog(log, forms)).toEqual([`낱말 #1 형태 1: 커밋 ${'a'.repeat(12)} (커밋 머리·메시지)`, `낱말 #2 형태 1: 커밋 ${'a'.repeat(12)} p.txt`, `낱말 #1 형태 1: 커밋 ${'a'.repeat(12)} (경로에 낱말이 있어 가림)`]);
+    const u16log = Buffer.concat([Buffer.from(`commit ${'b'.repeat(40)}\ndiff --git a/u.txt b/u.txt\n+`), Buffer.from('갑돌', 'utf16le'), Buffer.from('\n')]);
+    expect(scanLog(u16log, forms, bforms)).toEqual([`낱말 #2 바이트 utf16le: 커밋 ${'b'.repeat(12)} u.txt`]);
     expect(scanFile('d/f.txt', Buffer.from('a\nb ZORBLAX\n'), forms)).toEqual(['낱말 #1 형태 1: d/f.txt:2']);
     expect(scanFile('zorblax/f.txt', Buffer.from('ok'), forms)).toEqual(['낱말 #1 형태 1: (파일 이름) (경로에 낱말이 있어 가림)']);
-    expect(scanFile('b.bin', Buffer.from([0, 0x7a, 0x6f, 0x72, 0x62, 0x6c, 0x61, 0x78]), forms)).toEqual([]);
+    expect(scanFile('b.bin', Buffer.from([0, 0x7a, 0x6f, 0x72, 0x62, 0x6c, 0x61, 0x78]), forms, bforms)).toEqual(['낱말 #1 바이트 utf8: b.bin']);
+    expect(scanFile('app/test/fixtures/providers/x.jsonl', Buffer.from([0x7b, 0xb0, 0x7d]), forms)).toEqual(['fail-closed: app/test/fixtures/providers/x.jsonl — 올바른 UTF-8 이 아님']);
+    expect(scanFile('other/x.jsonl', Buffer.from([0x7b, 0xb0, 0x7d]), forms)).toEqual([]);
     expect(scanLog('', forms)).toEqual([]);
+    expect(wordShape('갑돌 Kim·')).toBe('한글 2자 / ASCII 4자 / 그 밖 1자');
+    expect(parseLsTree(Buffer.from('100644 blob abc123\tb 한.txt\u0000100644 blob def456\ta.txt\u0000160000 commit 999\tsub\u0000'))).toEqual([['a.txt', 'def456'], ['b 한.txt', 'abc123']]);
     expect(() => scanParseArgs(['--range'])).toThrow();
     expect(scanParseArgs([])).toEqual({ range: '1b8402f..HEAD', repo: null });
   });
 
-  test('CLI: 임시 레포(한글 경로)에서 log 쪽·트리 쪽을 잡고, 출력에 낱말을 찍지 않는다', () => {
+  test('CLI: HEAD 블롭(디스크에서 지운 것 포함)·UTF-16LE·CP949 원본·JSON 이스케이프·fail-closed 를 잡고, 출력에 낱말을 찍지 않는다', () => {
     const r = run(['--repo', repo, '--range', `${base}..HEAD`], words.join(','));
     expect(r.status, r.stderr).toBe(1);
     const out = r.stdout + r.stderr;
+    expect(out).toContain('낱말 #1: 한글 0자 / ASCII 7자 / 그 밖 0자');
+    expect(out).toContain('낱말 #2: 한글 2자 / ASCII 0자 / 그 밖 0자');
+    expect(out).toContain('경고: 작업 트리가 HEAD 와 다르다 — 검사는 HEAD 기준');
     expect(out).toContain(`낱말 #1 형태 1: 커밋 ${second} a.txt`);
     expect(out).toContain(`낱말 #2 형태 1: 커밋 ${second} (커밋 머리·메시지)`);
+    expect(out).toContain(`낱말 #2 바이트 utf16le: 커밋 ${second} u16.txt`);
+    expect(out).toContain(`낱말 #2 바이트 cp949: 커밋 ${second} cp949.txt`);
     expect(out).toContain('낱말 #1 형태 1: a.txt:2');
-    expect(out).toContain('낱말 #2 형태 2: 한글.txt:3');
-    expect(out).not.toContain('bin.dat');
+    expect(out).toContain('낱말 #2 형태 1: gone.txt:2');
+    expect(out).toContain('낱말 #2 바이트 utf16le: u16.txt');
+    expect(out).toContain('낱말 #2 바이트 cp949: cp949.txt');
+    expect(out).toMatch(/낱말 #2 형태 \d+: esc\.json:1/);
+    expect(out).toContain('fail-closed: app/test/fixtures/providers/claude/9.9.9/bom.jsonl — BOM 있음');
+    expect(out).not.toContain('ok.jsonl');
     for (const f of forms) expect(out.toLowerCase().includes(f.text.toLowerCase()), `형태 ${f.word}/${f.form}`).toBe(false);
-    expect(out).toMatch(/합계: 커밋 기록\(.*\) 2건, 작업 트리 2건/);
+    for (const f of bforms) expect(Buffer.from(out, 'utf8').includes(f.bytes), `바이트 ${f.word}/${f.kind}`).toBe(false);
+    expect(out).toMatch(/합계: 커밋 기록\(.*\) \d+건, HEAD 트리 \d+건/);
   });
 
-  test('CLI: 깨끗하면 0, 낱말이 비면 4, 없는 범위면 2', () => {
-    expect(run(['--repo', repo, '--range', `${base}..HEAD`], 'qqqnotthere').status).toBe(0);
+  test('CLI: 낱말이 없어도 fail-closed 블롭이 있으면 1, 낱말이 비면 4, 없는 범위면 2', () => {
+    expect(run(['--repo', repo, '--range', `${base}..HEAD`], 'qqqnotthere').status).toBe(1);   // bom.jsonl 은 낱말과 상관없이 실패
+    const clean = run(['--repo', repo, '--range', `${base}..${base}`], 'qqqnotthere');
+    expect(clean.stdout).toMatch(/fail-closed/);
     const e = run(['--repo', repo], '');
     expect(e.status).toBe(4);
     expect(e.stderr).toContain('PLENUM_PRIVATE_WORDS');
     expect(run(['--repo', repo, '--range', 'nope..HEAD'], 'x').status).toBe(2);
+  });
+
+  test('CLI: fail-closed 블롭이 없는 깨끗한 레포는 0', () => {
+    const r2 = path.join(tmp, '깨끗');
+    fs.mkdirSync(r2);
+    const g2 = (...a: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', `core.hooksPath=${path.join(tmp, 'nohooks')}`, ...a], {
+      cwd: r2, env: { ...process.env, GIT_AUTHOR_NAME: 'A', GIT_AUTHOR_EMAIL: 'a@example.invalid', GIT_COMMITTER_NAME: 'C', GIT_COMMITTER_EMAIL: 'c@example.invalid' },
+    });
+    fs.writeFileSync(path.join(r2, 'a.txt'), 'ok\n');
+    g2('init', '-q'); g2('add', '.'); g2('commit', '-q', '-m', 'x');
+    const r = run(['--repo', r2, '--range', 'HEAD'], 'qqqnotthere');
+    expect(r.status, r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/합계: 커밋 기록\(HEAD\) 0건, HEAD 트리 0건/);
   });
 });

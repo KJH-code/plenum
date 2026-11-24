@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from 'vitest';
 import { APP } from './helpers.ts';
-import { RATE_CREDIT_LEFT, WIN_HOME_CHECKS, hasWord, mojibakeVariants, privateWordsFromEnv } from '../../tools/probe/variants.ts';
+import { RATE_CREDIT_LEFT, WIN_HOME_CHECKS, escapeForms, fixtureBytesProblem, hasWord, mojibakeVariants, privateWordsFromEnv } from '../../tools/probe/variants.ts';
 
 const ROOT = path.join(APP, 'test', 'fixtures');
 function files(dir: string): string[] {
@@ -36,6 +36,15 @@ const HOME_PATHS: [string, RegExp][] = [
 
 test('검사할 fixture 가 있다 (0개면 아래 검사가 공짜로 통과한다)', () => {
   expect(all.filter((f) => f.endsWith('.jsonl')).length).toBeGreaterThanOrEqual(10);
+});
+
+// fail-closed: 녹화 fixture 는 올바른 UTF-8·BOM 없음·NUL 없음만 받는다(깨진 바이트 속 낱말을 쫓아가지 않고 막는다)
+test('녹화 fixture(providers/**)는 올바른 UTF-8 이고 BOM·NUL 이 없다', () => {
+  const strict = all.filter((f) => rel(f).split(path.sep)[0] === 'providers');
+  expect(strict.length).toBeGreaterThan(0);
+  const bad: string[] = [];
+  for (const f of strict) { const p = fixtureBytesProblem(fs.readFileSync(f)); if (p) bad.push(`${rel(f)}: ${p}`); }
+  expect(bad).toEqual([]);
 });
 
 test('fixture 에 허용 목록 밖 이메일이 없다', () => {
@@ -76,6 +85,7 @@ function wordHits(text: string, ws: string[]): string[] {
   ws.forEach((w, i) => {
     if (hasWord(text, w)) bad.push(`낱말 #${i + 1}`);    // ASCII 낱말은 대소문자 무시
     mojibakeVariants(w).variants.forEach((v, k) => { if (hasWord(text, v)) bad.push(`낱말 #${i + 1} 깨진 형태 ${k + 1}`); });
+    escapeForms(w).forEach((v, k) => { if (text.includes(v)) bad.push(`낱말 #${i + 1} JSON 이스케이프 ${k + 1}`); });
   });
   return bad;
 }
@@ -141,6 +151,16 @@ test('검사 규칙이 실제로 잡는다 (규칙이 아무것도 못 잡으면
   // ASCII 낱말은 대소문자 무시(H1), 한글은 그대로
   expect(wordHits('Hi GapDol!', ['gapdol'])).toEqual(['낱말 #1']);
   expect(wordHits('xx', ['gapdol'])).toEqual([]);
+  // JSON \uXXXX 이스케이프 꼴(소문자·대문자 hex)
+  expect(wordHits('{"a":"\\uac11\\ub3cc"}', ['갑돌'])).toEqual(['낱말 #1 JSON 이스케이프 1']);
+  expect(wordHits('{"a":"\\uAC11\\uB3CC"}', ['갑돌'])).toEqual(['낱말 #1 JSON 이스케이프 2']);
+  // fail-closed 바이트 규칙: BOM·NUL·잘못된 UTF-8 각각 잡고, 정상 UTF-8 은 통과
+  expect(fixtureBytesProblem(Buffer.from('\uFEFF{"a":1}\n', 'utf8'))).toBe('BOM 있음');
+  expect(fixtureBytesProblem(Buffer.from([0x7b, 0x00, 0x7d]))).toBe('NUL 바이트 있음');
+  expect(fixtureBytesProblem(Buffer.from('갑돌', 'utf16le'))).not.toBeNull();
+  expect(fixtureBytesProblem(Buffer.from([0x7b, 0xb0, 0xa9, 0x7d]))).toBe('올바른 UTF-8 이 아님');
+  expect(fixtureBytesProblem(Buffer.from('{"a":"홍길동 \uFFFD"}\n', 'utf8'))).toBeNull();
+  expect(fixtureBytesProblem(Buffer.alloc(0))).toBeNull();
   expect(mojibakeVariants('abc').variants).toEqual([]);
   expect(privateWordsFromEnv({ PLENUM_PRIVATE_WORDS: ' a, ,b ,' })).toEqual(['a', 'b']);
   expect(RATE_CREDIT.test('RateLimitResetCredit_1a2b')).toBe(true);

@@ -92,7 +92,9 @@ export function buildContext(o: CtxInput = {}): Ctx {
     warnings.push(...mv.warnings.map((x) => `낱말 #${i + 1}: ${x}`));
     mv.variants.forEach((v, k) => { add(v, HONG, `낱말 #${i + 1} 깨진 형태 ${k + 1}`, false); junkParts.add(v); });
   });
-  [...winNames].sort().forEach((n, i) => {
+  // 긴 이름부터(Kim 이 Kim Gapdol 의 앞부분만 바꾸고 나머지를 남기지 않게). 같으면 문자순
+  const names = [...winNames].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
+  names.forEach((n, i) => {
     const mv = mojibakeVariants(n);
     mv.variants.forEach((v, k) => { add(v, HONG, `사용자 이름 #${i + 1} 깨진 형태 ${k + 1}`, false); junkParts.add(v); });
     if (isAscii(n) && (GENERIC_NAMES.has(n.toLowerCase()) || n.length < 3)) {
@@ -105,7 +107,7 @@ export function buildContext(o: CtxInput = {}): Ctx {
   const junk = [...junkParts].sort((a, b) => b.length - a.length || (a < b ? -1 : 1)).map(esc).join('|');
   const r = o.workdir ? /plenum-rec-[^\\/]*-([A-Za-z0-9]{6})(?=[\\/]|$)/.exec(o.workdir) : null;
   return {
-    winNames: [...winNames].sort(), posixHomes: [...posixHomes].sort((a, b) => b.length - a.length), words: sorted,
+    winNames: names, posixHomes: [...posixHomes].sort((a, b) => b.length - a.length), words: sorted,
     privateWords: words.length, junk, rand: r ? r[1] : null, uuids: new Map(), warnings,
   };
 }

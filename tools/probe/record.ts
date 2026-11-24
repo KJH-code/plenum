@@ -311,5 +311,6 @@ async function main(argv: string[]): Promise<number> {
 
 const entry = process.argv[1];
 if (entry && import.meta.url === pathToFileURL(path.resolve(entry)).href) {
-  main(process.argv.slice(2)).then((c) => { process.exitCode = c; }, (e) => { console.error(e?.message ?? e); process.exitCode = 1; });
+  // 손자 프로세스·남은 타이머가 붙잡아도 확실히 끝낸다
+  main(process.argv.slice(2)).then((c) => process.exit(c), (e) => { console.error(e?.message ?? e); process.exit(1); });
 }

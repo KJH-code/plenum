@@ -21,7 +21,12 @@ npm run probe:redact -- <out>/<장면>-raw.jsonl [--dest <폴더>] [--allow-empt
 npm run probe:scan -- [--range <범위>] [--repo <폴더>]
 ```
 
-노트북에서 진짜 낱말을 `PLENUM_PRIVATE_WORDS` 에 넣고 병합 전에 돌린다(비면 거부, 종료 코드 4). 낱말마다 원래 형태와 깨진 형태 전부를 (a) `git log -p --format=fuller <범위>`(기본 `1b8402f..HEAD`, 커밋 메시지·작성자 이름·이메일 포함)와 (b) 작업 트리의 `git ls-files` 텍스트 파일(바이너리 건너뜀)에서 찾는다. 출력에는 낱말을 찍지 않고 `낱말 #n 형태 k: <파일>:<줄>` / `낱말 #n 형태 k: 커밋 <해시> <diff 파일>` 과 합계만 찍는다(경로에 낱말이 있으면 경로도 가린다). 0건이면 종료 코드 0, 있으면 1, git 실패는 2.
+노트북에서 진짜 낱말을 넣고 병합 전에 돌린다(비면 거부, 종료 코드 4). 낱말은 `.ps1` 파일에 적지 말고 PowerShell 창에서 `$env:PLENUM_PRIVATE_WORDS = '낱말1,낱말2'` 로 바로 설정한다(PS 5.1 은 BOM 없는 파일을 CP949 로 읽어 낱말이 깨진다). 첫 줄들의 `낱말 #n: 한글 a자 / ASCII b자 / 그 밖 c자` 가 기대와 맞는지 본다.
+
+- 찾는 곳: (a) `git log -p --text --format=fuller <범위>`(기본 `1b8402f..HEAD`, 커밋 메시지·작성자 이름·이메일 포함), (b) HEAD 트리의 블롭 전부(디스크가 아니라 HEAD. 작업 트리가 HEAD 와 다르면 경고).
+- 찾는 것: 낱말의 원래·깨진 형태·JSON `\uXXXX` 이스케이프 꼴(ASCII 는 대소문자 무시) + 원래 낱말의 바이트열(UTF-16LE·CP949, 텍스트가 아닌 버퍼는 UTF-8 도).
+- fail-closed: `app/test/fixtures/providers/**` 블롭이 올바른 UTF-8 이 아니거나 BOM·NUL 이 있으면 내용과 상관없이 실패(개인 정보 검사 `test/fixtures-privacy.test.ts` 도 같은 규칙).
+- 출력에는 낱말을 찍지 않고 `낱말 #n 형태 k: <파일>:<줄>` / `낱말 #n 형태 k: 커밋 <해시> <diff 파일>` / `낱말 #n 바이트 <종류>: …` 와 합계만 찍는다(경로에 낱말이 있으면 경로도 가린다). 0건이면 종료 코드 0, 있으면 1, git 실패는 2.
 
 원본에는 개인 정보가 그대로 있다. 원본은 레포 밖에만 두고, 치환한 것만 fixture 로 넣는다.
 치환 뒤 `app/` 에서 `npm test`(개인 정보 검사 `test/fixtures-privacy.test.ts`)를 돌리고, 파일을 눈으로 한 번 훑은 뒤 커밋한다.
@@ -49,4 +54,9 @@ npm run probe:scan -- [--range <범위>] [--repo <폴더>]
 - 이미 있는 버전 폴더에 합치면 `meta.json` 의 `os`·`command` 등은 기존 값을 유지한다(다르면 경고). golden·expect 는 이 도구가 만들지 않는다 — `UPDATE_GOLDEN=1`·`UPDATE_EXPECT=1` 로 따로 만든다(단계 C 에서 정리).
 - `/cygdrive/c/Users/<이름>` 형태는 검사·치환하지 않는다.
 - `RateLimitResetCredit_` 뒤 id 에 `_` 가 있으면 `_` 앞까지만 `0` 으로 바뀌고 뒷부분이 남는다.
+- NFD(자모 분리)·percent-encoding(`%EA%B0%91`) 형태는 찾지 않는다.
+- git 이 따옴표로 감싼 경로(특수 문자 등)는 scan 출력의 파일 라벨이 틀릴 수 있다(라벨만 틀리고 낱말이 새지는 않는다).
+- small-icu Node(TextDecoder('euc-kr') 없음)면 CP949 깨진 형태·바이트열이 빠진다(경고가 나온다).
+- 치환 값과 겹치는 낱말(`홍`·`길동`·`hong` 등)은 경고만 하고 치환·검사에서 뺀다.
+- scan 이 안 보는 곳: PR 제목·본문, 태그, git notes, force-push 로 덮인 원격 커밋.
 - 흔한·짧은 Windows 사용자 이름(`User`·`Admin` 등, 2자 이하)은 경로 밖 맨 이름을 치환하지 않는다(경로 안은 치환). 필요하면 `PLENUM_PRIVATE_WORDS` 에 넣는다.

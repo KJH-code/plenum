@@ -1,6 +1,6 @@
 // 낱말의 "깨진 형태"(mojibake) 생성기 + fixture 개인 정보 검사(test/fixtures-privacy.test.ts)와 redact.ts 가 같이 쓰는 규칙(맨 아래). 의존성 없음, Node 내장만.
 // 비공개 낱말이 인코딩이 어긋난 채 녹화에 남는 경우(UTF-8 바이트를 Latin-1 로 읽기 등)를 잡으려고 쓴다.
-// 5종, 이 순서: UTF-8→Latin-1, UTF-8→CP1252, CP949→Latin-1, CP949→CP1252, CP949→UTF-8(U+FFFD 섞임, U+FFFD 뿐이면 뺌). 같은 것은 하나로.
+// 5종, 이 순서: UTF-8→Latin-1, UTF-8→CP1252, CP949→Latin-1, CP949→CP1252, CP949→UTF-8(U+FFFD 아닌 글자가 2개 이상일 때만). 같은 것은 하나로.
 
 // CP1252 의 0x80~0x9F. 정의 안 된 0x81 0x8D 0x8F 0x90 0x9D 는 Windows 동작대로 같은 코드포인트로 둔다.
 const CP1252_HIGH = [
@@ -38,7 +38,7 @@ function cp949Reverse(): Map<string, number[]> | null {
   return cp949Table;
 }
 
-function cp949Bytes(word: string): number[] | null {
+export function cp949Bytes(word: string): number[] | null {
   const table = cp949Reverse();
   if (!table) return null;
   const out: number[] = [];
@@ -60,7 +60,12 @@ export function mojibakeVariants(word: string): { variants: string[]; warnings: 
   found.push(readAsLatin1(utf8), readAsCp1252(utf8));
   const cp949 = cp949Bytes(word);
   // 5번째: CP949 바이트를 UTF-8 로 읽은 것(U+FFFD 와 정상 글자가 섞인다). U+FFFD 만 남으면 정보가 없어 뺀다(오탐) — 홈 자리는 redact 가 U+FFFD 규칙으로 맡는다
-  if (cp949) found.push(readAsLatin1(cp949), readAsCp1252(cp949), new TextDecoder('utf-8').decode(Uint8Array.from(cp949)));
+  if (cp949) {
+    found.push(readAsLatin1(cp949), readAsCp1252(cp949));
+    // U+FFFD 가 아닌 글자가 2개 이상일 때만(1개 이하는 흔한 글자 하나라 오탐)
+    const u = new TextDecoder('utf-8').decode(Uint8Array.from(cp949));
+    if ([...u].filter((c) => c !== '\uFFFD').length >= 2) found.push(u);
+  }
   else if (!cp949Reverse()) warnings.push("CP949 깨진 형태 2종 생략: TextDecoder('euc-kr') 를 쓸 수 없다(small-icu?)");
   else warnings.push('CP949 깨진 형태 2종 생략: 낱말에 CP949 로 표현되지 않는 글자가 있다');
   return { variants: [...new Set(found)].filter((v) => v !== word && !/^\uFFFD*$/.test(v)), warnings };
@@ -74,7 +79,7 @@ export function privateWordsFromEnv(env: NodeJS.ProcessEnv = process.env): strin
 // 치환 값 `홍길동`·`hong` 만 예외. 이름 끝: 글자·숫자·_·- 가 이어지거나 '.'+글자·숫자가 이어지면 다른 이름(홍길동2·홍길동x·홍길동.txt).
 // 뒤에 공백·'·)·문장 끝 '.' 는 끝으로 본다
 export const HONG = '홍길동';
-export const NAME_END = '(?![\\p{L}\\p{N}_\\-]|\\.[\\p{L}\\p{N}])';
+export const NAME_END = '(?![\\p{L}\\p{N}_\\-\\uFFFD]|\\.[\\p{L}\\p{N}])';   // U+FFFD 도 이름의 일부로 본다
 const OK_NAME = `${HONG}${NAME_END}`;
 // [이름, 정규식] — 하나라도 맞으면 홍길동 아닌 Windows 사용자 폴더가 남은 것.
 // 구분자 묶음은 (?=(…))\1 로 통째로 먹는다(되짚기로 \\ 중 하나만 먹고 뒤를 통과시키지 않게)
@@ -105,3 +110,21 @@ export function wordsGate(words: string[], o: { allowEmpty?: boolean; dryRun?: b
   if (o.dryRun) return { ok: true, message: `경고: ${EMPTY_WORDS}` };
   return { ok: false, message: EMPTY_WORDS };
 }
+
+// JSON \uXXXX 이스케이프 꼴(ASCII 밖 글자만 이스케이프). 소문자 hex·대문자 hex 두 가지. ASCII 낱말은 없음
+export function escapeForms(word: string): string[] {
+  if (isAscii(word)) return [];
+  const esc = (up: boolean) => [...word].map((ch) => (ch.charCodeAt(0) < 0x80 && ch.length === 1 ? ch
+    : [...Array(ch.length).keys()].map((i) => { const h = ch.charCodeAt(i).toString(16).padStart(4, '0'); return `\\u${up ? h.toUpperCase() : h}`; }).join(''))).join('');
+  return [...new Set([esc(false), esc(true)])];
+}
+
+// fail-closed: 녹화 fixture(app/test/fixtures/providers/**)는 올바른 UTF-8·BOM 없음·NUL 없음이어야 한다.
+// 그 밖이면 내용과 상관없이 실패(깨진 바이트 속 낱말을 쫓아가지 않고 막는다). 문제 없으면 null
+export function fixtureBytesProblem(buf: Uint8Array): string | null {
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) return 'BOM 있음';
+  if (buf.includes(0)) return 'NUL 바이트 있음';
+  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { return '올바른 UTF-8 이 아님'; }
+  return null;
+}
+export const FIXTURE_STRICT_DIR = 'app/test/fixtures/providers/';
