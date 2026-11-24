@@ -21,7 +21,7 @@ npm run probe:redact -- <out>/<장면>-raw.jsonl [--dest <폴더>] [--allow-empt
 npm run probe:scan -- [--range <범위>] [--repo <폴더>]
 ```
 
-노트북에서 진짜 낱말을 넣고 병합 전에 돌린다(비면 거부, 종료 코드 4). 낱말은 `.ps1` 파일에 적지 말고 PowerShell 창에서 `$env:PLENUM_PRIVATE_WORDS = '낱말1,낱말2'` 로 바로 설정한다(PS 5.1 은 BOM 없는 파일을 CP949 로 읽어 낱말이 깨진다). 첫 줄들의 `낱말 #n: 한글 a자 / ASCII b자 / 그 밖 c자` 가 기대와 맞는지 본다.
+노트북에서 진짜 낱말을 넣고 병합 전에 돌린다(비면 거부, 종료 코드 4). 낱말은 `.ps1` 파일에 적지 말고 PowerShell 창에서 `$env:PLENUM_PRIVATE_WORDS = '낱말1,낱말2'` 로 바로 설정한다(PS 5.1 은 BOM 없는 파일을 CP949 로 읽어 낱말이 깨진다). 첫 줄들의 `낱말 #n: 한글 a자 / ASCII b자 / 그 밖 c자` 가 기대와 맞는지 본다. Windows 사용자 이름(폴더 이름·`USERNAME`)도 낱말에 넣는다 — redact 는 env 에서 자동으로 치환하지만 CI·scan 은 `PLENUM_PRIVATE_WORDS` 만 본다. 작업을 커밋한 뒤 돌린다(scan 은 HEAD 를 본다).
 
 - 찾는 곳: (a) `git log -p --text --format=fuller <범위>`(기본 `1b8402f..HEAD`, 커밋 메시지·작성자 이름·이메일 포함), (b) HEAD 트리의 블롭 전부(디스크가 아니라 HEAD. 작업 트리가 HEAD 와 다르면 경고).
 - 찾는 것: 낱말의 원래·깨진 형태·JSON `\uXXXX` 이스케이프 꼴(ASCII 는 대소문자 무시) + 원래 낱말의 바이트열(UTF-16LE·CP949, 텍스트가 아닌 버퍼는 UTF-8 도).
@@ -31,7 +31,7 @@ npm run probe:scan -- [--range <범위>] [--repo <폴더>]
 원본에는 개인 정보가 그대로 있다. 원본은 레포 밖에만 두고, 치환한 것만 fixture 로 넣는다.
 치환 뒤 `app/` 에서 `npm test`(개인 정보 검사 `test/fixtures-privacy.test.ts`)를 돌리고, 파일을 눈으로 한 번 훑은 뒤 커밋한다.
 
-치환: 홈(`X:\Users\`·`//c/Users/`·`/c/Users/`·`/mnt/c/Users/`·평탄화 `C--Users-`, 한글 N글자 이름의 평탄화 꼴은 `C--Users----`) → `홍길동`, POSIX 홈 → `/home/hong`, 비공개 낱말·env 의 Windows 사용자 이름(폴더 이름·Windows 의 `USERNAME`, 경로 밖 맨 이름 포함, ASCII 는 대소문자 무시) → `홍길동`/`hong`(깨진 형태는 `홍길동`), 허용 밖 이메일 → `hong@example.invalid`, 계정·조직 UUID 칸 → `00000000-0000-4000-8000-00000000000N`, `synced/<uuid>_<uuid>` → `synced/ORG_ACCOUNT`, `RateLimitResetCredit_<영숫자·->` → `_0`, 작업 폴더 랜덤 → `AbCdEf`. 깨진 형태는 `variants.ts` 의 5종(UTF-8→Latin-1·CP1252, CP949→Latin-1·CP1252·UTF-8. U+FFFD 뿐인 것은 낱말 검사에서 빼고 홈 자리 규칙이 맡는다). 지움: 계정 맥락 첨부(`prompt_snapshot`·`session_context`·`skill_listing`·`credential_org`), 시스템 프롬프트 칸, init 의 명령·에이전트·스킬 설명.
+치환: 홈(`X:\Users\`·`//c/Users/`·`/c/Users/`·`/mnt/c/Users/`·평탄화 `C--Users-`, 한글 N글자 이름의 평탄화 꼴은 `C--Users----`) → `홍길동`, POSIX 홈 → `/home/hong`, 비공개 낱말·env 의 Windows 사용자 이름(폴더 이름·Windows 의 `USERNAME`, 경로 밖 맨 이름 포함, ASCII 는 대소문자 무시) → `홍길동`/`hong`(깨진 형태는 `홍길동`), 허용 밖 이메일 → `hong@example.invalid`, 계정·조직 UUID 칸 → `00000000-0000-4000-8000-00000000000N`, `synced/<uuid>_<uuid>` → `synced/ORG_ACCOUNT`, `RateLimitResetCredit_<영숫자·->` → `_0`, 작업 폴더 랜덤 → `AbCdEf`. 깨진 형태는 `variants.ts` 의 5종(UTF-8→Latin-1·CP1252, CP949→Latin-1·CP1252·UTF-8). CP949→UTF-8 꼴은 U+FFFD 아닌 글자가 2개 이상일 때만 낱말 치환·검사(redact·CI·scan)에 쓰고, 홈 폴더 자리 규칙에는 글자 수와 상관없이 그 꼴 전체를 쓴다(`C:\Users\<그 꼴>` → `C:\Users\홍길동`). 홍길동 바로 뒤에 비ASCII 글자(U+FFFD·결합 문자 등)가 이어지면 다른 이름으로 보고 막는다. 낱말·사용자 이름의 JSON 이스케이프 꼴(`\uac11…`, 문자열 속 JSON 글의 `\\uac11…` 처럼 백슬래시가 여럿인 꼴 포함)도 백슬래시 개수를 유지한 채 홍길동의 같은 꼴로 바꾼다. 지움: 계정 맥락 첨부(`prompt_snapshot`·`session_context`·`skill_listing`·`credential_org`), 시스템 프롬프트 칸, init 의 명령·에이전트·스킬 설명.
 
 ## 장면 JSON (`scenes/*.json`)
 
@@ -59,4 +59,10 @@ npm run probe:scan -- [--range <범위>] [--repo <폴더>]
 - small-icu Node(TextDecoder('euc-kr') 없음)면 CP949 깨진 형태·바이트열이 빠진다(경고가 나온다).
 - 치환 값과 겹치는 낱말(`홍`·`길동`·`hong` 등)은 경고만 하고 치환·검사에서 뺀다.
 - scan 이 안 보는 곳: PR 제목·본문, 태그, git notes, force-push 로 덮인 원격 커밋.
+- UTF-16LE·바이너리 블롭 안의 ASCII 낱말은 바이트 검색이라 대소문자를 구분한다.
+- 작업 트리가 HEAD 와 다르면 scan 은 경고만 하고 HEAD 를 본다 — 커밋한 뒤 돌린다.
+- `git log -p` 는 병합 커밋의 diff 를 보여 주지 않는다(병합에서만 생긴 변경은 로그 쪽에서 안 보임, 트리 쪽은 HEAD 에 있으면 잡음).
+- UTF-16LE 에서 낮은 바이트가 0x0A 인 글자(예: U+AC0A)는 로그 쪽 바이트 검색이 줄 나눔에 끊겨 못 잡을 수 있다(트리 쪽은 잡는다).
+- Windows 사용자 이름은 redact 가 env 에서 자동으로 치환하지만 CI·scan 은 `PLENUM_PRIVATE_WORDS` 만 본다 — 사용자 이름(폴더 이름·`USERNAME`)도 낱말에 넣는다.
+- POSIX 홈 `/home/<이름>` 뒤에 U+FFFD 가 이어지는 꼴은 다루지 않는다(Windows 노트북은 해당 없음).
 - 흔한·짧은 Windows 사용자 이름(`User`·`Admin` 등, 2자 이하)은 경로 밖 맨 이름을 치환하지 않는다(경로 안은 치환). 필요하면 `PLENUM_PRIVATE_WORDS` 에 넣는다.

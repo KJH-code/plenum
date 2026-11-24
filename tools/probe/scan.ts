@@ -8,18 +8,19 @@
 import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FIXTURE_STRICT_DIR, cp949Bytes, escapeForms, fixtureBytesProblem, hasWord, isAscii, mojibakeVariants, privateWordsFromEnv } from './variants.ts';
+import { FIXTURE_STRICT_DIR, cp949Bytes, escapeForms, fixtureBytesProblem, foldEscapes, hasWord, isAscii, mojibakeVariants, privateWordsFromEnv } from './variants.ts';
 
 export const DEFAULT_RANGE = '1b8402f..HEAD';
-export interface Form { word: number; form: number; text: string; lower: string | null }
+export interface Form { word: number; form: number; text: string; lower: string | null; esc?: boolean }   // esc: JSON 이스케이프 꼴(백슬래시를 접은 사본에서 찾는다)
 export interface ByteForm { word: number; kind: 'utf8' | 'utf16le' | 'cp949'; bytes: Buffer }
 
 // 낱말마다 형태 1 = 원래, 2.. = 깨진 형태, 그 뒤 JSON 이스케이프(소문자·대문자 hex)
 export function formsOf(words: string[]): Form[] {
   const out: Form[] = [];
   words.forEach((w, i) => {
-    [...new Set([w, ...mojibakeVariants(w).variants, ...escapeForms(w)])]
-      .forEach((t, k) => out.push({ word: i + 1, form: k + 1, text: t, lower: isAscii(t) ? t.toLowerCase() : null }));
+    const escs = new Set(escapeForms(w));
+    [...new Set([w, ...mojibakeVariants(w).variants, ...escs])]
+      .forEach((t, k) => out.push({ word: i + 1, form: k + 1, text: t, lower: isAscii(t) && !escs.has(t) ? t.toLowerCase() : null, ...(escs.has(t) ? { esc: true } : {}) }));
   });
   return out;
 }
@@ -49,10 +50,12 @@ export function wordShape(w: string): string {
 
 function hitsIn(line: string, forms: Form[]): Form[] {
   let low: string | null = null;
+  let folded: string | null = null;
   const out: Form[] = [];
   for (const f of forms) {
     if (!f.text) continue;
-    if (f.lower !== null) { low ??= line.toLowerCase(); if (low.includes(f.lower)) out.push(f); } else if (line.includes(f.text)) out.push(f);
+    if (f.esc) { folded ??= foldEscapes(line); if (folded.includes(f.text)) out.push(f); }
+    else if (f.lower !== null) { low ??= line.toLowerCase(); if (low.includes(f.lower)) out.push(f); } else if (line.includes(f.text)) out.push(f);
   }
   return out;
 }

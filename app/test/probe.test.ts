@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { APP } from './helpers.ts';
 import { buildContext, findRisks, mergeMeta, redactLine, redactLines, redactString } from '../../tools/probe/redact.ts';
 import { commandOf, fillPrompt, outcomeOf, parseArgs, parseScene, pickPermission, pickQuestion, psQuoteInner, randToken, workdirOf, writeIn } from '../../tools/probe/record.ts';
-import { EMPTY_WORDS, mojibakeVariants, wordsGate } from '../../tools/probe/variants.ts';
+import { EMPTY_WORDS, WIN_HOME_CHECKS, cp949Bytes, mojibakeVariants, wordsGate } from '../../tools/probe/variants.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { byteFormsOf, formsOf, parseArgs as scanParseArgs, parseLsTree, scanFile, scanLog, wordShape } from '../../tools/probe/scan.ts';
 import os from 'node:os';
@@ -467,5 +467,59 @@ describe('scan', () => {
     const r = run(['--repo', r2, '--range', 'HEAD'], 'qqqnotthere');
     expect(r.status, r.stdout).toBe(0);
     expect(r.stdout).toMatch(/합계: 커밋 기록\(HEAD\) 0건, HEAD 트리 0건/);
+  });
+});
+
+describe('review 4차 반례', () => {
+  const PX = { homedir: '/home/hong', tmpdir: '/tmp' };
+  // 결정적 시드 무작위(mulberry32)
+  const rng = (seed: number) => () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const euc = new TextDecoder('euc-kr');
+  const syllable = (r: () => number) => euc.decode(Uint8Array.from([0xb0 + Math.floor(r() * 25), 0xa1 + Math.floor(r() * 94)]));   // KS X 1001 한글 B0A1~C8FE
+  const f5 = (w: string) => new TextDecoder('utf-8').decode(Uint8Array.from(cp949Bytes(w)!));
+
+  test('A: 무작위 3음절 KS X 1001 가짜 이름 200개(+갑돌이네·홍길순·갑돌, 4000개는 30초라 줄임) — 홈 자리의 깨진 꼴 전부 홍길동, 검사 0', () => {
+    const r = rng(20261124);
+    const names = ['갑돌이네', '홍길순', '갑돌'];
+    while (names.length < 203) { const n = syllable(r) + syllable(r) + syllable(r); if (n !== '홍길동') names.push(n); }
+    const bad: string[] = [];
+    for (const name of names) {
+      const ctx = buildContext({ ...PX, env: { USERPROFILE: `C:\\Users\\${name}` }, platform: 'win32' });
+      for (const form of [f5(name), ...mojibakeVariants(name).variants]) {
+        const line = JSON.stringify({ msg: { type: 'user', content: `PS C:\\Users\\${form}\\proj> dir` } });
+        const { out, risks } = redactLines([line], ctx);
+        const ok = out[0].includes('PS C:\\\\Users\\\\홍길동\\\\proj> dir') && risks.length === 0 && !WIN_HOME_CHECKS.some(([, re]) => re.test(out[0]));
+        if (!ok) bad.push(`${[...name].map((c) => c.charCodeAt(0).toString(16)).join(',')}: ${out[0].slice(30, 80)}`);
+      }
+    }
+    expect(bad.slice(0, 5)).toEqual([]);
+    expect(bad.length).toBe(0);
+  });
+
+  test('A: 홍길동 뒤 끝 — 공백·>·\'·)·문장 끝 .·JSON \\\\ 는 통과, 홍길동2·U+FFFD·U+0333·´ 는 막힘', () => {
+    const ctx = buildContext({ ...PX, env: {} });
+    const pass = ['PS C:\\Users\\홍길동> ', "'C:\\Users\\홍길동'", '(C:\\Users\\홍길동)', 'C:\\Users\\홍길동.', 'C:\\Users\\홍길동 x', JSON.stringify({ a: 'C:\\Users\\홍길동\\p' })];
+    for (const s of pass) { expect(findRisks(s, ctx), s).toEqual([]); expect(WIN_HOME_CHECKS.some(([, re]) => re.test(s)), s).toBe(false); }
+    for (const s of ['C:\\Users\\홍길동2', 'C:\\Users\\홍길동\uFFFD\\p', 'C:\\Users\\홍길동\u0333\\p', 'C:\\Users\\홍길동´\\p', '//c/Users/홍길동\u0333/x']) {
+      expect(findRisks(s, ctx).length, s).toBeGreaterThan(0);
+      expect(WIN_HOME_CHECKS.some(([, re]) => re.test(s)), s).toBe(true);
+    }
+  });
+
+  test('B: 문자열 속 JSON 글의 \\\\uac11\\\\ub3cc(백슬래시 둘) — redact 가 같은 꼴 홍길동으로, 치환 안 된 줄은 CI·scan 이 잡음', () => {
+    const ctx = buildContext({ ...PX, env: { USERPROFILE: 'C:\\Users\\갑돌', PLENUM_PRIVATE_WORDS: '갑돌' }, platform: 'win32' });
+    const raw = JSON.stringify({ msg: { type: 'user', message: { content: [{ type: 'tool_result', content: '{"owner": "\\uac11\\ub3cc", "up": "\\uAC11\\uB3CC"}' }] } } });
+    expect(raw).toContain('\\\\uac11\\\\ub3cc');
+    const { out, risks } = redactLines([raw], ctx);
+    expect(risks).toEqual([]);
+    expect(out[0]).toContain('\\\\ud64d\\\\uae38\\\\ub3d9');
+    expect(out[0]).toContain('\\\\uD64D\\\\uAE38\\\\uB3D9');
+    expect(out[0]).not.toMatch(/uac11/i);
+    expect(redactString('a \\uac11\\ub3cc b \\\\\\\\uac11\\\\\\\\ub3cc', ctx)).toBe('a \\ud64d\\uae38\\ub3d9 b \\\\\\\\ud64d\\\\\\\\uae38\\\\\\\\ub3d9');
+    // 치환하지 않은 줄: redact 검사·scan 이 잡는다(CI 는 fixtures-privacy 자가검사)
+    expect(findRisks(raw, buildContext({ ...PX, env: { PLENUM_PRIVATE_WORDS: '갑돌' } }))).toContain('낱말 #1 JSON 이스케이프');
+    const hits = scanFile('app/test/fixtures/providers/claude/9/x.jsonl', Buffer.from(raw + '\n'), formsOf(['갑돌']), byteFormsOf(['갑돌']).forms);
+    expect(hits.some((h) => /^낱말 #1 형태 \d+: .*x\.jsonl:1$/.test(h))).toBe(true);
+    expect(hits.join('\n')).not.toMatch(/uac11/i);
   });
 });

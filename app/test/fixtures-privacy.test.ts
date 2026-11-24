@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from 'vitest';
 import { APP } from './helpers.ts';
-import { RATE_CREDIT_LEFT, WIN_HOME_CHECKS, escapeForms, fixtureBytesProblem, hasWord, mojibakeVariants, privateWordsFromEnv } from '../../tools/probe/variants.ts';
+import { RATE_CREDIT_LEFT, WIN_HOME_CHECKS, escapeForms, fixtureBytesProblem, foldEscapes, hasWord, mojibakeVariants, privateWordsFromEnv } from '../../tools/probe/variants.ts';
 
 const ROOT = path.join(APP, 'test', 'fixtures');
 function files(dir: string): string[] {
@@ -85,7 +85,9 @@ function wordHits(text: string, ws: string[]): string[] {
   ws.forEach((w, i) => {
     if (hasWord(text, w)) bad.push(`낱말 #${i + 1}`);    // ASCII 낱말은 대소문자 무시
     mojibakeVariants(w).variants.forEach((v, k) => { if (hasWord(text, v)) bad.push(`낱말 #${i + 1} 깨진 형태 ${k + 1}`); });
-    escapeForms(w).forEach((v, k) => { if (text.includes(v)) bad.push(`낱말 #${i + 1} JSON 이스케이프 ${k + 1}`); });
+    // 백슬래시가 여럿인 꼴(\\uac11 — 문자열 속 JSON 글)도: \\+u 를 \u 로 접은 사본에서 찾는다
+    const folded = foldEscapes(text);
+    escapeForms(w).forEach((v, k) => { if (folded.includes(v)) bad.push(`낱말 #${i + 1} JSON 이스케이프 ${k + 1}`); });
   });
   return bad;
 }
@@ -154,6 +156,8 @@ test('검사 규칙이 실제로 잡는다 (규칙이 아무것도 못 잡으면
   // JSON \uXXXX 이스케이프 꼴(소문자·대문자 hex)
   expect(wordHits('{"a":"\\uac11\\ub3cc"}', ['갑돌'])).toEqual(['낱말 #1 JSON 이스케이프 1']);
   expect(wordHits('{"a":"\\uAC11\\uB3CC"}', ['갑돌'])).toEqual(['낱말 #1 JSON 이스케이프 2']);
+  expect(wordHits('"{\\"a\\":\\"\\\\uac11\\\\ub3cc\\"}"', ['갑돌'])).toEqual(['낱말 #1 JSON 이스케이프 1']);   // 백슬래시 둘
+  expect(wordHits('\\\\\\\\uac11\\\\\\\\ub3cc', ['갑돌'])).toEqual(['낱말 #1 JSON 이스케이프 1']);   // 넷
   // fail-closed 바이트 규칙: BOM·NUL·잘못된 UTF-8 각각 잡고, 정상 UTF-8 은 통과
   expect(fixtureBytesProblem(Buffer.from('\uFEFF{"a":1}\n', 'utf8'))).toBe('BOM 있음');
   expect(fixtureBytesProblem(Buffer.from([0x7b, 0x00, 0x7d]))).toBe('NUL 바이트 있음');

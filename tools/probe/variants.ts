@@ -76,10 +76,11 @@ export function privateWordsFromEnv(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 // ── fixture 개인 정보 검사와 redact 가 같이 쓰는 규칙 ─────────────
-// 치환 값 `홍길동`·`hong` 만 예외. 이름 끝: 글자·숫자·_·- 가 이어지거나 '.'+글자·숫자가 이어지면 다른 이름(홍길동2·홍길동x·홍길동.txt).
+// 치환 값 `홍길동`·`hong` 만 예외. 이름 끝: 글자·숫자·_·-·비ASCII 글자가 이어지거나 '.'+글자·숫자가 이어지면 다른 이름(홍길동2·홍길동x·홍길동.txt·홍길동�).
 // 뒤에 공백·'·)·문장 끝 '.' 는 끝으로 본다
 export const HONG = '홍길동';
-export const NAME_END = '(?![\\p{L}\\p{N}_\\-\\uFFFD]|\\.[\\p{L}\\p{N}])';   // U+FFFD 도 이름의 일부로 본다
+// 비ASCII 글자(U+FFFD·결합 문자 U+0333·´ 등 포함)가 바로 이어지면 모두 이름의 일부로 보고 막는다
+export const NAME_END = '(?![\\p{L}\\p{N}_\\-]|[^\\x00-\\x7F]|\\.[\\p{L}\\p{N}])';
 const OK_NAME = `${HONG}${NAME_END}`;
 // [이름, 정규식] — 하나라도 맞으면 홍길동 아닌 Windows 사용자 폴더가 남은 것.
 // 구분자 묶음은 (?=(…))\1 로 통째로 먹는다(되짚기로 \\ 중 하나만 먹고 뒤를 통과시키지 않게)
@@ -117,6 +118,16 @@ export function escapeForms(word: string): string[] {
   const esc = (up: boolean) => [...word].map((ch) => (ch.charCodeAt(0) < 0x80 && ch.length === 1 ? ch
     : [...Array(ch.length).keys()].map((i) => { const h = ch.charCodeAt(i).toString(16).padStart(4, '0'); return `\\u${up ? h.toUpperCase() : h}`; }).join(''))).join('');
   return [...new Set([esc(false), esc(true)])];
+}
+
+// JSON 글이 문자열 안에 또 들어가면 이스케이프가 \\uac11 처럼 백슬래시가 여럿이 된다 → 하나로 접은 사본에서도 찾는다
+export const foldEscapes = (s: string) => (s.includes('\\') ? s.replace(/\\+u/g, '\\u') : s);
+// 이스케이프 꼴 낱말 검사(백슬래시 개수 무관)
+export function hasEscapeForm(text: string, word: string): boolean {
+  const forms = escapeForms(word);
+  if (forms.length === 0 || !text.includes('\\')) return false;
+  const f = foldEscapes(text);
+  return forms.some((v) => f.includes(v));
 }
 
 // fail-closed: 녹화 fixture(app/test/fixtures/providers/**)는 올바른 UTF-8·BOM 없음·NUL 없음이어야 한다.

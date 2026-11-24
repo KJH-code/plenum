@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { HONG, NAME_END, RATE_CREDIT_LEFT, WIN_HOME_CHECKS, isAscii, mojibakeVariants, privateWordsFromEnv, wordsGate } from './variants.ts';
+import { cp949Bytes, HONG, NAME_END, RATE_CREDIT_LEFT, WIN_HOME_CHECKS, isAscii, mojibakeVariants, privateWordsFromEnv, wordsGate } from './variants.ts';
 
 export const WIN_HOME = HONG;
 export const POSIX_HOME = '/home/hong';
@@ -29,10 +29,32 @@ function wordRule(from: string, to: string, label: string, bounded: boolean): Wo
   return { from, to, ci, bounded: b, label, re: new RegExp(src, ci ? 'gi' : 'g') };
 }
 
+// JSON \uXXXX 이스케이프 꼴 규칙. 백슬래시 개수(\u·\\u·…)는 맞은 그대로 두고 홍길동의 같은 꼴로 바꾼다
+export interface EscRule { label: string; re: RegExp }
+function escRule(word: string, label: string): EscRule | null {
+  if (isAscii(word) || HONG.includes(word)) return null;   // 치환 값과 겹치는 낱말은 add 와 같이 뺀다
+  let first = true;
+  const src = [...word].map((ch) => {
+    if (ch.length === 1 && ch.charCodeAt(0) < 0x80) return esc(ch);
+    return [...Array(ch.length).keys()].map((i) => {
+      const h = ch.charCodeAt(i).toString(16).padStart(4, '0');
+      const part = `${first ? '(\\\\+)' : '\\1'}u${h}`;
+      first = false;
+      return part;
+    }).join('');
+  }).join('');
+  return { label, re: new RegExp(src, 'gi') };
+}
+const hongEscape = (bs: string, upper: boolean) => [...HONG].map((c) => {
+  const h = c.charCodeAt(0).toString(16).padStart(4, '0');
+  return `${bs}u${upper ? h.toUpperCase() : h}`;
+}).join('');
+
 export interface Ctx {
   winNames: string[];                         // Windows 사용자 이름(홍길동 제외)
   posixHomes: string[];                       // POSIX 홈 경로(/home/x, /Users/x, /root)
   words: WordRule[];                          // 낱말·깨진 형태·사용자 이름 규칙, 긴 것부터
+  escapes: EscRule[];                         // 낱말·사용자 이름의 JSON \uXXXX 이스케이프 꼴(백슬래시 개수 무관)
   privateWords: number;                       // PLENUM_PRIVATE_WORDS 낱말 수
   junk: string;                               // 홈 폴더 이름 자리가 이것만으로 되어 있으면 홍길동으로(U+FFFD·깨진 형태)
   rand: string | null;                        // 작업 폴더 랜덤(모르면 6자 아무거나)
@@ -94,6 +116,18 @@ export function buildContext(o: CtxInput = {}): Ctx {
   });
   // 긴 이름부터(Kim 이 Kim Gapdol 의 앞부분만 바꾸고 나머지를 남기지 않게). 같으면 문자순
   const names = [...winNames].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
+  // 홈 자리 전용: CP949 바이트를 UTF-8 로 읽은 꼴 전체(U+FFFD 아닌 글자 수와 상관없이). 낱말 규칙·CI 검사에서는 2글자 미만이면 뺀다(mojibakeVariants)
+  const f5 = (w: string) => {
+    const c = cp949Bytes(w);
+    if (!c) return;
+    const u = new TextDecoder('utf-8').decode(Uint8Array.from(c));
+    if (u !== w) junkParts.add(u);                     // ASCII 이름은 그대로라 빼야 한다(깨진 형태가 아님)
+  };
+  words.forEach(f5);
+  names.forEach(f5);
+  const escapes: EscRule[] = [];
+  words.forEach((w, i) => { const r = escRule(w, `낱말 #${i + 1} JSON 이스케이프`); if (r) escapes.push(r); });
+  names.forEach((n, i) => { const r = escRule(n, `사용자 이름 #${i + 1} JSON 이스케이프`); if (r) escapes.push(r); });
   names.forEach((n, i) => {
     const mv = mojibakeVariants(n);
     mv.variants.forEach((v, k) => { add(v, HONG, `사용자 이름 #${i + 1} 깨진 형태 ${k + 1}`, false); junkParts.add(v); });
@@ -107,7 +141,7 @@ export function buildContext(o: CtxInput = {}): Ctx {
   const junk = [...junkParts].sort((a, b) => b.length - a.length || (a < b ? -1 : 1)).map(esc).join('|');
   const r = o.workdir ? /plenum-rec-[^\\/]*-([A-Za-z0-9]{6})(?=[\\/]|$)/.exec(o.workdir) : null;
   return {
-    winNames: names, posixHomes: [...posixHomes].sort((a, b) => b.length - a.length), words: sorted,
+    winNames: names, posixHomes: [...posixHomes].sort((a, b) => b.length - a.length), words: sorted, escapes,
     privateWords: words.length, junk, rand: r ? r[1] : null, uuids: new Map(), warnings,
   };
 }
@@ -155,6 +189,7 @@ export function redactString(s: string, ctx: Ctx): string {
     if (h.split('/').filter(Boolean).length >= 2) t = t.replace(new RegExp(`${esc(flat)}(?![A-Za-z0-9])`, 'g'), '-home-hong');
   }
   for (const w of ctx.words) t = t.replace(w.re, w.to);
+  for (const e of ctx.escapes) t = t.replace(e.re, (m, bs: string) => hongEscape(bs, /u[0-9a-f]{0,3}[A-F]/.test(m)));
   t = t.replace(EMAIL, (m) => (ALLOWED_EMAIL.test(m) ? m : FAKE_EMAIL));
   t = t.replace(UUID_TEXT, (_m, a, u) => `${a}${zeroUuid(ctx, u)}`);
   t = t.replace(SYNCED, (_m, a) => `${a}ORG_ACCOUNT`);
@@ -213,6 +248,7 @@ export function redactLine(line: string, ctx: Ctx): string | null {
 export function findRisks(text: string, ctx: Ctx): string[] {
   const out: string[] = [];
   for (const w of ctx.words) { w.re.lastIndex = 0; if (w.re.test(text)) out.push(w.label); w.re.lastIndex = 0; }
+  for (const e of ctx.escapes) { e.re.lastIndex = 0; if (e.re.test(text)) out.push(e.label); e.re.lastIndex = 0; }
   for (const [name, re] of WIN_HOME_CHECKS) if (re.test(text)) out.push(`홍길동 아닌 Windows 사용자 폴더(${name})`);
   if (RATE_CREDIT_LEFT.test(text)) out.push('RateLimitResetCredit 실제 값');
   return out;
