@@ -163,7 +163,7 @@
           }
         ],
         "sessionAllow": true,
-        "remembers": true
+        "remembers": false
       },
       "seq": 13,
       "at": 0
@@ -226,7 +226,7 @@
           }
         ],
         "sessionAllow": true,
-        "remembers": true
+        "remembers": false
       },
       "seq": 19,
       "at": 0
@@ -309,7 +309,7 @@
           }
         ],
         "sessionAllow": true,
-        "remembers": true
+        "remembers": false
       },
       "seq": 27,
       "at": 0

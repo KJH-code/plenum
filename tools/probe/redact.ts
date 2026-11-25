@@ -367,7 +367,9 @@ function main(argv: string[]): number {
 
   const ctx = buildContext({ workdir: typeof recMeta.workdir === 'string' ? recMeta.workdir : null });
   for (const w of ctx.warnings) console.warn(w);
-  const rawLines = fs.readFileSync(rawPath, 'utf8').split(/\r?\n/);
+  // 녹화의 훅 nonce → __PLENUM_NONCE__ (재생 때 가짜 claude 가 그 채팅의 nonce 로 바꿔 낸다 — 자동 허용 경로가 재생에서도 돈다)
+  const nonce = typeof recMeta.hookNonce === 'string' && /^[0-9a-f]{16,}$/.test(recMeta.hookNonce) ? recMeta.hookNonce : null;
+  const rawLines = fs.readFileSync(rawPath, 'utf8').split(/\r?\n/).map((l) => (nonce ? l.split(nonce).join('__PLENUM_NONCE__') : l));
   const { out, fffd, fffdLeft, risks } = redactLines(rawLines, ctx);
   const red = redactValue(recMeta, ctx) as Record<string, any>;
   const metaRisks = findRisks(JSON.stringify(red), ctx);

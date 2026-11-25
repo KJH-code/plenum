@@ -12,7 +12,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
 import { createClaudeDriver } from '../../app/server/provider/claude.ts';
 import type { QuestionOutcome } from '../../app/server/provider/events.ts';
-import { chatArgs, chatEnv } from '../../app/server/chat.ts';
+import { chatArgs, chatEnv, prepareHookSettings } from '../../app/server/chat.ts';
 import { commandFor, resolveCommand, runCommand } from '../../app/server/open.ts';
 import { killTree } from '../../app/server/proc.ts';
 import { privateWordsFromEnv, wordsGate } from './variants.ts';
@@ -162,7 +162,10 @@ async function main(argv: string[]): Promise<number> {
   const out = path.resolve(o.out ?? path.join(tmp, 'plenum-probe'));
   const workdir = workdirOf(scene, tmp, randToken());
   const prompts = scene.turns.map((t) => fillPrompt(t.prompt, tmp));
-  const args = chatArgs({ model: scene.model }, process.env, process.platform);
+  // 앱과 같은 PreToolUse cwd 훅(nonce)을 붙인다. dry-run 은 파일을 쓰지 않고 경로만 보인다
+  const hookId = `${scene.scene}-hooks`;
+  const hook = o.dryRun ? { nonce: 'DRYRUN', path: path.join(out, `${hookId}.json`) } : prepareHookSettings(out, hookId);
+  const args = chatArgs({ model: scene.model, hookSettingsPath: hook.path }, process.env, process.platform);
   const resolved = resolveCommand('claude', process.env, process.platform);
   console.log(`장면: ${scene.scene}`);
   console.log(`작업 폴더: ${workdir}`);
@@ -193,7 +196,7 @@ async function main(argv: string[]): Promise<number> {
     cwd: workdir, env: chatEnv(process.env), stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true, windowsVerbatimArguments: !!cmd.verbatim, detached: process.platform !== 'win32',
   });
-  const driver = createClaudeDriver();
+  const driver = createClaudeDriver({ hookNonce: hook.nonce });
   let version: string | null = null;
   let turn = 0;
   let stderr = '';
@@ -296,9 +299,11 @@ async function main(argv: string[]): Promise<number> {
 
   const meta = {
     provider: 'claude', version, os: osName(process.platform), recordedAt: today(),
-    command: ['claude', ...args], workdir, scene: scene.scene,
+    // 훅 설정 파일 경로는 실행마다 다르다 → 자리표시. nonce 는 redact 가 녹화 줄에서 __PLENUM_NONCE__ 로 바꾼다(재생 때 가짜 claude 가 새 nonce 로 채움)
+    command: ['claude', ...args.map((a) => (a === hook.path ? '<hook-settings>' : a))], workdir, scene: scene.scene, hookNonce: hook.nonce,
   };
   fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
+  try { fs.rmSync(hook.path, { force: true }); } catch { /* 무시 */ }
 
   if (stderr) console.log(`stderr(앞 2000자):\n${stderr}`);
   console.log(`종료: code=${exit.code} sig=${exit.sig} ${t()}ms`);

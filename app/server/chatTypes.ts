@@ -39,10 +39,10 @@ export type Card =
       // "이 세션 동안 허용"에 쓸 규칙: permission_suggestions 중 type==='addRules' 인 것의 rules 만(재혁 결정 2026-11-13).
       // setMode·addDirectories 는 버린다(setMode acceptEdits 가 rm 까지 묻지 않고 실행시킴 — 녹화로 확인). 비면 버튼을 안 보인다
       sessionRules: SessionRule[];
-      // "이 세션 동안 허용" 버튼을 보일지(드라이버 옵션에 allow_session 이 있음 = 명령 도구이거나 sessionRules 가 있음).
-      // 명령 도구는 Plenum 이 (도구, 명령, 작업 폴더)를 기억해 같은 요청을 대신 허용한다. 없으면(옛 카드) sessionRules 유무로 본다
+      // "이 세션 동안 허용" 버튼을 보일지(드라이버 옵션에 allow_session 이 있음 = remembers 이거나 sessionRules 가 있음). 없으면(옛 카드) sessionRules 유무로 본다
       sessionAllow?: boolean;
-      // 세션 허용을 누르면 Plenum 이 이 요청을 기억해 같은 요청을 대신 허용함(Bash·PowerShell). 아니면 Claude Code 규칙(addRules)에만 맡김
+      // 세션 허용을 누르면 Plenum 이 이 요청을 기억해 같은 요청을 대신 허용함(Bash·PowerShell 이고 PreToolUse 훅이 실제 폴더를 알려 줬을 때).
+      // 아니면 Claude Code 규칙(addRules)에만 맡김
       remembers?: boolean;
       diff?: { path: string; old: string; new: string } }    // Edit/Write/MultiEdit 접힌 diff
   | { kind: 'unknown'; requestId: string; subtype: string; version: string | null }; // 처리 못 하는 control_request → 터미널로 열기 안내

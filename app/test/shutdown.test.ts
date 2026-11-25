@@ -278,7 +278,8 @@ it('isPlenumChatCommandLine: 채팅 인자가 있는 claude 만, 데스크톱 �
   // Windows: winget claude.exe, npm claude.cmd 를 감싼 cmd.exe
   expect(isPlenumChatCommandLine(`"C:\\Users\\홍길동\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe" ${chat}`)).toBe(true);
   // npm claude.cmd: 진짜 commandFor 가 만드는 cmd.exe 명령줄(인자마다 따옴표) 그대로 — 손으로 쓴 따옴표 없는 명령줄로는 Windows 에서만 깨지는 걸 못 잡았다(CI #17)
-  const viaCmd = commandFor('C:\\Users\\홍길동\\AppData\\Roaming\\npm\\claude.cmd', chatArgs({ model: 'haiku' }), 'win32');
+  const viaCmd = commandFor('C:\\Users\\홍길동\\AppData\\Roaming\\npm\\claude.cmd', chatArgs({ model: 'haiku', hookSettingsPath: 'C:\\Users\\홍길동\\AppData\\Roaming\\plenum\\hooks\\0a1b.json' }), 'win32'); // 훅 설정은 파일 경로라 .cmd 도 거부하지 않는다
+  expect(viaCmd.args.join(' ')).toContain('"--include-hook-events" "--settings" "C:\\Users\\홍길동\\AppData\\Roaming\\plenum\\hooks\\0a1b.json"');
   expect(viaCmd.args.join(' ')).toContain('"--input-format" "stream-json"');
   expect(isPlenumChatCommandLine(`C:\\Windows\\system32\\cmd.exe ${viaCmd.args.join(' ')}`)).toBe(true);
   expect(isPlenumChatCommandLine(`/usr/local/bin/node /usr/local/bin/claude ${chat}`)).toBe(true);

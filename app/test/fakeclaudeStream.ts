@@ -6,7 +6,8 @@
 // stdin 이 닫히면 남은 in 은 건너뛰고 out 을 다 낸 뒤 종료 코드 0 (녹화 06).
 // 기다리지 않던 interrupt 를 받으면 control_response {still_queued:[]} + result/error_during_execution 을 내고 종료 1.
 // FAKE_STREAM_LOG: 받은 stdin 줄 기록. FAKE_STREAM_ARGS: {args, cwd, sessionEnv, notify(받은 PLENUM_NOTIFY, 없으면 null)} 한 줄. FAKE_STREAM_DELAY_MS: out 줄 간격. 합성 대본 out 줄의 delayMs: 그 줄만 늦게 낸다.
-// --version → FAKE_CLAUDE_VERSION(기본 2.1.323), --help → FAKE_CLAUDE_HELP_EFFORT=0 이면 --effort 줄 없는 도움말.
+// --version → FAKE_CLAUDE_VERSION(기본 2.1.323), --help → FAKE_CLAUDE_HELP_EFFORT=0 이면 --effort 줄 없는 도움말, FAKE_CLAUDE_HELP_HOOKS=1 이면 --include-hook-events 줄.
+// out 줄의 __PLENUM_NONCE__ 는 받은 --settings 훅 명령의 nonce 로 바꿔 낸다(합성 대본이 우리 훅 hook_response 를 흉내 낼 때).
 // FAKE_STREAM_WAITS(선택): in 자리에서 기다리기 시작할 때 "<대본 인덱스> <msg.type>", exit 자리에서 stdin 닫힘을 기다리기 시작할 때
 //   "<대본 인덱스> exit" 를 한 줄씩 덧붙인다. 대본 인덱스 = in·out·exit 만 남긴 줄 순서(0부터). 계약 테스트(test/contract/replay.ts)가 쓴다.
 // FAKE_STREAM_HANG=1: 시작하자마자 손자 프로세스 하나를 띄우고(FAKE_STREAM_PIDS 에 "자기 손자" pid 기록) 무엇을 받아도 안 끝난다.
@@ -26,6 +27,7 @@ if (args[0] === '--help') {
     '  -p, --print                       Print response and exit',
     '  --model <model>                   Model for the current session'];
   if (env.FAKE_CLAUDE_HELP_EFFORT !== '0') lines.push('  --effort <level>                  Effort level for the current session (low, medium, high, xhigh, max)');
+  if (env.FAKE_CLAUDE_HELP_HOOKS === '1') lines.push('  --include-hook-events             Include all hook lifecycle events in the output stream');
   lines.push('  --resume [value]                  Resume a conversation');
   console.log(lines.join('\n'));
   process.exit(0);
@@ -48,7 +50,11 @@ const queue = [];
 let closed = false;
 let wake = null;
 let waitingFor = null;
-const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+// --settings 훅 명령의 끝 낱말 = Plenum 이 만든 nonce. 대본 out 줄의 __PLENUM_NONCE__ 를 그것으로 바꿔 낸다(없으면 그대로)
+let nonce = null;
+// --settings 는 파일 경로(Plenum)·JSON 글자 둘 다 받는다(진짜 claude 와 같다). 시작 때 읽는다
+{ const i = args.indexOf('--settings'); if (i >= 0) { try { const v = args[i + 1]; const j = v.trim().startsWith('{') ? JSON.parse(v) : JSON.parse(fs.readFileSync(v, 'utf8')); nonce = j.hooks.PreToolUse[0].hooks[0].command.split(' ').pop(); } catch (e) { nonce = null; } } }
+const out = (m) => { let t = JSON.stringify(m); if (nonce) t = t.split('__PLENUM_NONCE__').join(nonce); process.stdout.write(t + '\n'); };
 const finish = (code) => { if (hang) return; process.stdout.write('', () => process.exit(code)); };
 const isInterrupt = (m) => m && m.type === 'control_request' && m.request && m.request.subtype === 'interrupt';
 const rl = readline.createInterface({ input: process.stdin });
@@ -101,7 +107,7 @@ export interface FakeStreamClaude {
   logFile: string;     // 받은 stdin 줄
   argsFile: string;    // 받은 인자
   pidsFile: string;    // HANG: "자기 손자"
-  env(o?: { script?: string; hang?: boolean; delayMs?: number; version?: string; helpEffort?: boolean; extra?: Record<string, string> }): NodeJS.ProcessEnv;
+  env(o?: { script?: string; hang?: boolean; delayMs?: number; version?: string; helpEffort?: boolean; helpHooks?: boolean; extra?: Record<string, string> }): NodeJS.ProcessEnv;
   stdin(): any[];
   argsCalls(): { args: string[]; cwd: string; sessionEnv: (string | null)[]; notify: string | null }[];
   hangPids(): number[][];
@@ -136,6 +142,7 @@ export function makeFakeStreamClaude(dir: string, form: FakeForm = defaultForm()
       ...(o.delayMs !== undefined ? { FAKE_STREAM_DELAY_MS: String(o.delayMs) } : {}),
       ...(o.version ? { FAKE_CLAUDE_VERSION: o.version } : {}),
       ...(o.helpEffort === false ? { FAKE_CLAUDE_HELP_EFFORT: '0' } : {}),
+      ...(o.helpHooks ? { FAKE_CLAUDE_HELP_HOOKS: '1' } : {}),
       ...o.extra,
     }),
     stdin: () => lines(logFile).map((l) => JSON.parse(l)),

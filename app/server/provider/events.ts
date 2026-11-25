@@ -71,8 +71,9 @@ export type PermissionRequestEvent = Base & {
     /** "이 세션 동안 허용"을 누르면 드라이버가 이 요청 키를 기억해 같은 요청을 대신 허용함(Claude: Bash·PowerShell) */
     remembers?: boolean } };
 };
-// ── 드라이버가 대신 허용한 승인 요청 (카드 없음). Claude: "이 세션 동안 허용"을 누른 것과 (도구, 명령 글자 그대로, 작업 폴더#세대)가 같은 요청.
-// 작업 폴더 = 요청의 cwd 칸, 없으면 init 의 cwd. 세대 = cd·Set-Location 같은 폴더 바꾸는 명령의 tool_use 가 나온 수. 기억은 드라이버 인스턴스(채팅 프로세스) 동안만.
+// ── 드라이버가 대신 허용한 승인 요청 (카드 없음). Claude: "이 세션 동안 허용"을 누른 것과 (도구 Bash·PowerShell, description 뺀 입력, 실제 폴더, blocked_path)가 같은 요청.
+// 실제 폴더 = Plenum 이 붙인 PreToolUse 훅이 그 tool_use_id 에 알려 준 셸 cwd(hook_response, nonce 대조). 모르면 자동 허용 없음.
+// 기억은 드라이버 인스턴스(채팅 프로세스) 동안만, Agent·Task tool_use 가 나오면 비운다.
 // 앱은 reply 를 그대로 하네스에 쓰고(안 쓰면 claude 가 영원히 기다린다) 자동 허용 줄을 남긴다. 드라이버는 이 요청을 pending 에 두지 않는다
 export type PermissionAutoAllowedEvent = Base & {
   type: 'permissionAutoAllowed';

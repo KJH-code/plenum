@@ -17,7 +17,7 @@ const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 // ── 분기 도달 계측 (계약 테스트가 fixture 전체를 돈 뒤 안 닿은 분기를 출력한다). 동작에는 쓰지 않는다
 export const BRANCHES = [
   'parse', 'throw',
-  'system/init', 'system/task', 'system/task-no-id', 'system/other',
+  'system/init', 'system/task', 'system/task-no-id', 'system/hook-cwd', 'system/hook-cwd-conflict', 'system/other',
   'stream/no-event', 'stream/sub', 'stream/message_start', 'stream/text_delta', 'stream/text_delta-no-id', 'stream/other',
   'assistant/no-content', 'assistant/text', 'assistant/tool_use', 'assistant/other-block',
   'user/no-content', 'user/tool_result',
@@ -129,19 +129,13 @@ function sessionRulesFrom(suggestions: unknown): SessionRule[] {
   return out;
 }
 
-// 작업 폴더를 바꾸는 말(cd·chdir·Set-Location·sl·Push-Location·pushd·Pop-Location·popd, 대소문자 무시)이 명령 맨 앞이나
-// ; & | ( { 줄바꿈 따옴표 뒤에 낱말로 있으면 true. 따옴표 안 글자도 잡는다(오탐 = 카드가 한 번 더 뜸 → 안전한 쪽)
-const CHDIR = /(?:^|[;&|({\n\r"'])\s*(?:cd|chdir|set-location|sl|push-location|pushd|pop-location|popd)(?![\w-])/i;
-export function changesDirectory(command: string): boolean {
-  return CHDIR.test(command);
-}
 const commandOfInput = (input: unknown): string | null => (isObj(input) && typeof input.command === 'string' ? input.command : null);
-// 작업 폴더 세대를 올리는 tool_use: 폴더를 바꾸는 명령, 또는 하위 에이전트(Agent·Task — 안에서 무엇을 할지 모른다 → 안전한 쪽)
-const bumpsCwdEpoch = (name: string, input: unknown): boolean => {
-  if (name === 'Agent' || name === 'Task') return true;
-  const cmd = commandOfInput(input);
-  return cmd !== null && changesDirectory(cmd);
-};
+// 하위 에이전트(Agent·Task) tool_use 가 나오면 세션 허용 기억을 모두 비운다. 하위 에이전트의 도구 호출도 PreToolUse 훅을 거쳐
+// 훅 cwd 가 그 호출의 실제 폴더라면 필요 없지만, 진짜 claude 로 (worktree) 하위 에이전트를 돌려 확인하지 못했다 → 안전한 쪽
+const clearsMemory = (name: string): boolean => name === 'Agent' || name === 'Task';
+// Plenum 이 붙인 PreToolUse 훅이 stdout 에 쓰는 줄의 머리. 뒤에 "<nonce> <JSON {c: cwd, i: tool_use_id, t: tool_name}>"
+export const HOOK_MARK = 'PLENUM_CWD';
+const HOOK_TOOLS: Record<string, string> = { 'PreToolUse:Bash': 'Bash', 'PreToolUse:PowerShell': 'PowerShell' };
 // Plenum 이 세션 허용을 기억하는 도구(입력 모양을 아는 것만). MCP 등 다른 command 도구는 기억하지 않는다
 const REMEMBER_TOOLS = new Set(['Bash', 'PowerShell']);
 // 키 정렬한 JSON(중첩 객체도). 배열 순서는 그대로
@@ -182,15 +176,17 @@ function thrownRequest(text: string): { requestId: string; subtype: string | nul
 }
 
 // ── 드라이버 ────────────────────────────────────────────
-export function createClaudeDriver() {
+// hookNonce: 이 채팅의 claude 에 붙인 훅 명령의 nonce(chat.ts chatArgs). 없으면 훅 줄을 하나도 믿지 않는다 → 자동 허용 꺼짐
+export function createClaudeDriver(opts: { hookNonce?: string | null } = {}) {
+  const hookPrefix = typeof opts.hookNonce === 'string' && opts.hookNonce ? `${HOOK_MARK} ${opts.hookNonce} ` : null;
   let lastMessageId: string | null = null;
   let sessionId: string | null = null;
   const taskToTool = new Map<string, string>();
   const pending = new Map<string, { input: unknown; sessionRules: SessionRule[]; key?: string }>();
-  // "이 세션 동안 허용"을 누른 (도구, 명령 글자 그대로, 작업 폴더#세대). 이 드라이버(= 채팅 프로세스) 동안만. 이어하기면 새 드라이버라 비어 있다
+  // "이 세션 동안 허용"을 누른 (도구, 입력, 실제 폴더, blocked_path). 이 드라이버(= 채팅 프로세스) 동안만. 이어하기면 새 드라이버라 비어 있다
   const sessionAllowed = new Set<string>();
-  let cwd: string | null = null;                // system/init 의 cwd
-  let cwdEpoch = 0;                            // 폴더를 바꾸는 명령의 tool_use 가 나올 때마다 1 올린다(실행 여부 모름 → 안전한 쪽)
+  // tool_use_id → 우리 PreToolUse 훅이 알려 준 셸의 실제 폴더. null = 같은 id 에 다른 값이 와서 모름(자동 허용 안 함)
+  const cwdByToolUse = new Map<string, string | null>();
   let intN = 0;
   let interrupted = false;                     // 이번 턴에 interrupt() 를 만들었음. result 를 받으면 내린다
   let thrown = 0;                              // decode 가 안에서 잡은 예외 수(계약 테스트 (b) 가 0 인지 본다)
@@ -209,8 +205,6 @@ export function createClaudeDriver() {
       hit('system/init');
       const sid = str(m.session_id);
       if (sid !== null) sessionId = sid;
-      const initCwd = str(m.cwd);
-      if (initCwd !== null) cwd = initCwd;
       const permissionMode = str(m.permissionMode);
       return [{
         ...base(), type: 'sessionStarted', sessionId: sid ?? '', model: str(m.model), mode: permissionMode, resumed: false,
@@ -230,8 +224,30 @@ export function createClaudeDriver() {
         description: m.subtype === 'task_started' ? str(m.description) : null, status, background: !!m.is_backgrounded,
       }];
     }
+    if (m.subtype === 'hook_response' && hookCwd(m)) return [];
     hit('system/other');
     return [unknown(raw, 'event', `system/${String(m.subtype ?? '')}`)];
+  }
+
+  // hook_response 가 우리 훅의 표시 줄이면 cwdByToolUse 에 넣고 true. 조건: PreToolUse 이고 hook_name 이 PreToolUse:Bash·PowerShell,
+  // stdout 의 줄이 정확히 "PLENUM_CWD <우리 nonce> " 로 시작, JSON 의 t 가 hook_name 의 도구와 같음. 그 밖(다른 훅·틀린 nonce)은 false → 지금처럼 unknown
+  function hookCwd(m: Record<string, any>): boolean {
+    if (!hookPrefix || m.hook_event !== 'PreToolUse' || typeof m.hook_name !== 'string' || typeof m.stdout !== 'string') return false;
+    const tool = Object.prototype.hasOwnProperty.call(HOOK_TOOLS, m.hook_name) ? HOOK_TOOLS[m.hook_name] : null;
+    if (!tool) return false;
+    let ours = false;
+    for (const line of m.stdout.split(/\r?\n/)) {
+      if (!line.startsWith(hookPrefix)) continue;
+      let j: unknown;
+      try { j = JSON.parse(line.slice(hookPrefix.length)); } catch { continue; }
+      if (!isObj(j) || typeof j.c !== 'string' || typeof j.i !== 'string' || j.t !== tool) continue;
+      ours = true;
+      const before = cwdByToolUse.get(j.i);
+      if (before === undefined) { hit('system/hook-cwd'); cwdByToolUse.set(j.i, j.c); }
+      else if (before !== j.c) { hit('system/hook-cwd-conflict'); cwdByToolUse.set(j.i, null); }
+      else hit('system/hook-cwd');
+    }
+    return ours;
   }
 
   function decodeControlRequest(raw: Raw, m: Record<string, any>): ProviderEvent[] {
@@ -261,11 +277,13 @@ export function createClaudeDriver() {
     }
     hit('control_request/permission');
     const sessionRules = sessionRulesFrom(req.permission_suggestions);
-    // 기억하는 도구(Bash·PowerShell, input.command 가 문자열): 키 = [도구, description 뺀 입력 전체(키 정렬), 작업 폴더#세대, blocked_path ?? null].
-    // 작업 폴더는 요청에 cwd 칸이 있으면 그것, 없으면 init 의 cwd
+    // 기억하는 도구(Bash·PowerShell, input.command 가 문자열)이고 우리 훅이 그 tool_use 의 실제 폴더를 알려 줬을 때만:
+    // 키 = [도구, description 뺀 입력 전체(키 정렬), 훅 cwd, blocked_path ?? null]. 폴더를 모르면 키가 없다 → 자동 허용도 기억도 안 함.
+    // 요청의 cwd 칸·init 의 cwd 는 쓰지 않는다(기준을 훅 하나로)
     const command = commandOfInput(req.input);
-    const key = command === null || !REMEMBER_TOOLS.has(toolName) ? undefined
-      : JSON.stringify([toolName, inputKey(req.input), `${typeof req.cwd === 'string' ? req.cwd : cwd ?? ''}#${cwdEpoch}`, str(req.blocked_path)]);
+    const folder = toolUseId !== undefined ? cwdByToolUse.get(toolUseId) : undefined;
+    const key = command === null || !REMEMBER_TOOLS.has(toolName) || typeof folder !== 'string' ? undefined
+      : JSON.stringify([toolName, inputKey(req.input), folder, str(req.blocked_path)]);
     const toolCall = { toolCallId: toolUseId ?? '', title: toolLabel(toolName, req.input), kind: kindOf(toolName, req.input), toolName, rawInput: req.input };
     if (key !== undefined && sessionAllowed.has(key)) {
       hit('control_request/permission-auto');
@@ -328,7 +346,7 @@ export function createClaudeDriver() {
           } else if (b.type === 'tool_use' && typeof b.id === 'string') {
             hit('assistant/tool_use');
             const name = String(b.name ?? '');
-            if (bumpsCwdEpoch(name, b.input)) cwdEpoch++;
+            if (clearsMemory(name)) sessionAllowed.clear();
             out.push({
               ...base(), type: 'toolCall', toolCallId: b.id, title: toolLabel(name, b.input), kind: kindOf(name, b.input), status: 'pending', toolName: name, rawInput: b.input, parentToolCallId: parent,
               ...(typeof b.name === 'string' ? {} : { toolNameNotString: true as const }),

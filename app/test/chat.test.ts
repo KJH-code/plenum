@@ -136,7 +136,7 @@ describe('녹화 재생', () => {
 
     // 인자·cwd·env
     const call = s.fake.argsCalls()[0];
-    expect(call.args).toEqual(chatArgs({ model: 'haiku', effort: 'low' }));
+    expect(call.args).toEqual(chatArgs({ model: 'haiku', effort: 'low', hookSettingsPath: null })); // 가짜 도움말에 --include-hook-events 가 없다 → 훅 없음
     expect(call.args).not.toContain('--bare');
     expect(fs.realpathSync(call.cwd)).toBe(fs.realpathSync(s.project.path));
     expect(call.sessionEnv).toEqual([null, null]);
@@ -803,10 +803,12 @@ describe('--effort 지원 감지', () => {
     const s = setup();
     const env = s.fake.env({ version: '2.1.300' });
     const { claudeCaps } = await import('../server/claudecaps.ts');
-    expect(await claudeCaps(env)).toEqual({ found: true, version: '2.1.300', effort: true });
+    expect(await claudeCaps(env)).toEqual({ found: true, version: '2.1.300', effort: true, hookEvents: false });
     // 캐시: 도움말이 바뀌어도 같은 경로·버전이면 다시 묻지 않는다
-    expect(await claudeCaps({ ...env, FAKE_CLAUDE_HELP_EFFORT: '0' })).toEqual({ found: true, version: '2.1.300', effort: true });
-    expect(await claudeCaps({ ...env, PATH: path.join(s.root, '빈 PATH') })).toEqual({ found: false, version: null, effort: false });
+    expect(await claudeCaps({ ...env, FAKE_CLAUDE_HELP_EFFORT: '0' })).toEqual({ found: true, version: '2.1.300', effort: true, hookEvents: false });
+    expect(await claudeCaps({ ...env, PATH: path.join(s.root, '빈 PATH') })).toEqual({ found: false, version: null, effort: false, hookEvents: false });
+    // --include-hook-events 가 도움말에 있으면 hookEvents: true (세션 허용 폴더 훅)
+    expect(await claudeCaps(s.fake.env({ version: '2.1.301', helpHooks: true }))).toEqual({ found: true, version: '2.1.301', effort: true, hookEvents: true });
   });
 
   it('도움말에 --effort 가 없으면 effort: false, effort 를 넣은 start 는 400 (없으면 시작)', async () => {
@@ -820,7 +822,7 @@ describe('--effort 지원 감지', () => {
     try {
       // claude --version 을 띄우는 GET 이라 X-Plenum 필수
       expect((await srv.call('GET', '/api/claude/capabilities')).status).toBe(403);
-      expect((await srv.call('GET', '/api/claude/capabilities', undefined, { 'X-Plenum': '1' })).body).toEqual({ found: true, version: '2.1.248', effort: false });
+      expect((await srv.call('GET', '/api/claude/capabilities', undefined, { 'X-Plenum': '1' })).body).toEqual({ found: true, version: '2.1.248', effort: false, hookEvents: false });
       const pid = (await srv.call('POST', '/api/projects', { kind: 'local', path: s.project.path })).body.id;
       const bad = await srv.call('POST', `/api/projects/${pid}/chats`, { text: '안녕', effort: 'high' });
       expect(bad.status).toBe(400);

@@ -85,7 +85,12 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 
 ## 남은 일 (3단계 리뷰 하·노트북 확인, 0.3.x)
 - 끝난 채팅과 이벤트 버퍼가 서버가 도는 동안 메모리에 계속 남는다 — 개수·시간 상한을 두고 버리기
-- PowerShell 세션 허용: Plenum 이 (도구, 명령 글자 그대로, 작업 폴더)를 기억해 같은 명령을 카드 없이 대신 허용하게 바꿨다(D안). 노트북에서 장면 07(ⓐ~ⓔ, 하위 폴더로 `Set-Location` 한 뒤 같은 명령은 카드)을 다시 녹화해 확인 필요
+- PowerShell 세션 허용: Plenum 이 (도구 Bash·PowerShell, description 뺀 입력, 실제 폴더, blocked_path)를 기억해 같은 요청을 카드 없이 대신 허용하게 바꿨다(D안). 실제 폴더는 Plenum 이 채팅에 붙인 PreToolUse 훅(`--include-hook-events` + `--settings`)이 알려 준 셸 cwd. 노트북에서 장면 07(ⓐ~ⓔ, 하위 폴더로 `Set-Location` 한 뒤 같은 명령은 카드)을 다시 녹화해 PowerShell 훅 cwd 가 Set-Location 을 따라가는지 확인 필요
+- 자동 허용은 Plenum 이 붙인 PreToolUse 훅이 알려 준 실제 폴더가 있을 때만 — 훅이 안 돌거나 `--include-hook-events` 가 없는 버전이면 같은 명령도 매번 카드. 훅 설정은 채팅마다 `<설정 폴더>/hooks/<chatId>.json` 파일로 써서 `--settings <경로>` 로 넘기고(.cmd·.exe 같은 길) 채팅이 끝나면·서버가 다시 켜지면 지운다. 설정 폴더 경로에 `"`·`%` 가 있으면(cmd 가 해석) 훅을 안 붙인다 → 자동 허용 꺼짐
+- 하위 에이전트(Agent·Task) 호출이 나오면 세션 허용 기억을 모두 비운다(하위 에이전트 도구 호출의 훅 cwd 가 그 호출의 실제 폴더인지 진짜 claude 로 확인 전 — 안전한 쪽)
+- 같은 request_id 로 거절 답과 첫 카드 답이 둘 다 갈 수 있다(진짜 claude 는 id 가 UUID 라 실제로 생기기 어렵다)
+- 훅 nonce 는 설정 파일(0600)과 훅 명령줄(`node -e … <nonce>`)에 들어가 같은 사용자의 프로세스 목록·파일에서는 보일 수 있다(같은 사용자 권한의 다른 프로세스는 원래 믿는 범위)
+- Plenum 서버를 같은 설정 폴더로 둘 띄우면 나중 서버가 시작할 때 앞 서버의 훅 설정 파일을 지운다(이미 띄운 claude 는 시작 때 읽었으면 영향 없음 — 확인 전)
 - Bash 는 addRules 를 session 으로 보내므로 Claude Code 규칙이 명령 글자만 보고, 다른 폴더에서도 다시 묻지 않는다(0.3.x 부터 같음)
 - 같은 프로젝트 동시 응답 경고가 아직 init 전(`starting`) 채팅과 훅으로 보이는 터미널 세션을 세지 않는다
 - `main.ts` 의 SIGINT·SIGHUP 연결(그리고 `node --import tsx` 신호 전달)을 자동 테스트로 검사하기(지금은 수동 측정만)
@@ -104,7 +109,7 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 ### 0.3.0
 - 프로젝트 창 = 세션 화면. 새 세션은 앱 안 채팅: `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio`(구독 로그인, `--bare` 없음). 모델·노력도 고르기(노력도는 `claude --help`에 `--effort`가 있을 때만)
   - 질문 카드(AskUserQuestion): 선택지 버튼, 추천 강조, 기타 직접 입력. 답은 `updatedInput.answers`
-  - 승인 카드: 허용 / 이 세션 동안 허용 / 거부… + 이유(Claude에 전달). "이 세션 동안"은 `permission_suggestions` 중 `addRules`의 규칙만 destination `session`으로 보낸다 — `setMode acceptEdits`까지 보내면 그 뒤 `rm`이 묻지 않고 실행됐다(녹화로 확인). 명령 도구(입력에 문자열 `command`, Bash·PowerShell 등)는 제안이 없어도 "이 세션 동안 같은 명령 허용"이 있다: Plenum 이 그 채팅 프로세스 동안 (도구, 명령 그대로, 작업 폴더)를 기억해 같은 요청은 카드 없이 허용하고 "자동 허용: …" 줄을 남긴다. `cd`·`Set-Location` 같은 폴더 바꾸는 명령이 나오면 다른 폴더로 본다(다시 카드). `addDirectories`·`setMode`는 보내지 않는다. Edit·Write는 접힌 diff
+  - 승인 카드: 허용 / 이 세션 동안 허용 / 거부… + 이유(Claude에 전달). "이 세션 동안"은 `permission_suggestions` 중 `addRules`의 규칙만 destination `session`으로 보낸다 — `setMode acceptEdits`까지 보내면 그 뒤 `rm`이 묻지 않고 실행됐다(녹화로 확인). Edit·Write는 접힌 diff
   - 도구 호출은 "도구 N번 · 이름들" 한 줄로 접고, Agent 호출은 턴마다 워커 표. 마크다운은 직접 렌더(HTML 이스케이프, http·https 링크만)
   - 처리 못 하는 요청은 "터미널로 열기" 안내 카드. `system/init`의 `claude_code_version`이 2.1.248보다 낮으면 경고
   - 새로고침·재연결해도 서버가 들고 있던 이벤트를 다시 받아 답 안 한 카드가 다시 뜬다. 같은 프로젝트에서 응답 중인 세션이 있으면 경고(막지 않음)

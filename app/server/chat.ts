@@ -2,15 +2,17 @@
 // 줄 해석과 stdin 답 원문은 드라이버(provider/claude.ts)가 한다. 여기는 드라이버의 내부 이벤트를 지금의 ChatEvent·Card 로 펼치고
 // 프로세스·상태·저장을 맡는다. 줄 모양 근거: test/fixtures/providers/claude/2.1.323/*.jsonl (진짜 claude 녹화). 모르는 줄(unknown)은 무시한다(죽지 않기).
 import { spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import {
   MIN_CLAUDE_VERSION, modeFromAnswer, modeFromSkill, toolLabel,
   type Card, type CardReply, type ChatConflict, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
   type ModeName, type WorkerRun, limitGate,
 } from './chatTypes.ts';
-import { createClaudeDriver, limitsFromUsage, type ClaudeDriver } from './provider/claude.ts';
+import { createClaudeDriver, HOOK_MARK, limitsFromUsage, type ClaudeDriver } from './provider/claude.ts';
 import type { ProviderEvent } from './provider/events.ts';
 import { claudeCaps, type ClaudeCaps } from './claudecaps.ts';
 import { UserError } from './errors.ts';
@@ -24,7 +26,7 @@ export { DENIED, parseLimits } from './provider/claude.ts';
 export interface ChatDeps {
   terminalAlive(sessionId: string): boolean;
   workerModel(subagentType: string): string | null;
-  caps(): Promise<ClaudeCaps>;                             // --effort 지원 여부 (effort 를 줄 때만 본다)
+  caps(): Promise<ClaudeCaps>;                             // --effort·--include-hook-events 지원 여부 (시작할 때마다 본다. 버전별 캐시)
 }
 export interface StartOptions { text: string; model?: string; effort?: string; resume?: string }
 export interface StartResult { chat: ChatInfo; warnings: string[]; forwarded?: boolean }
@@ -89,6 +91,7 @@ interface Chat {
   driver: ClaudeDriver;
   closing: Promise<void> | null;
   exited: Promise<void>;
+  hookFile?: string;                                       // 폴더 훅 설정 파일(끝나면 지운다)
   stderr: string;
 }
 
@@ -118,8 +121,45 @@ export function pluginCacheRule(platform: NodeJS.Platform, homedir: string, conf
   return rule('', configDir);
 }
 
-// claude 실행 인자 (테스트가 모양을 본다). env 는 CLAUDE_CONFIG_DIR 만 본다
-export function chatArgs(o: { model?: string; effort?: string; resume?: string }, env: NodeJS.ProcessEnv = {},
+// ── 폴더 훅: 세션 허용 자동 허용의 "실제 폴더" (Bash·PowerShell PreToolUse 훅의 stdin cwd = 셸의 지금 폴더, cd 를 따라간다)
+// 훅은 stdin JSON 을 읽어 "PLENUM_CWD <nonce> {c,i,t}" 한 줄을 stdout 에 쓰고 늘 exit 0(파싱 실패도 0, 아무것도 안 씀).
+// --include-hook-events 로 그 stdout 이 stream-json hook_response 로 오고(승인 요청보다 먼저) 드라이버가 nonce 를 대조한다.
+// 파일 경로 없이 node -e 로 만든다(Windows 한글 사용자 이름 경로를 훅 셸에 넘기지 않는다). 코드에는 큰따옴표·$·백틱·! 를 쓰지 않는다
+// (bash·cmd·PowerShell 5.1 에서 그대로 통과). nonce 는 node -e 뒤 첫 인자 = process.argv[1]
+export const newHookNonce = () => randomBytes(16).toString('hex');
+const HOOK_CODE = `let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);`
+  + `process.stdout.write('${HOOK_MARK} '+process.argv[1]+' '+JSON.stringify({c:j.cwd,i:j.tool_use_id,t:j.tool_name})+'\\n')}catch(e){}process.exit(0)})`;
+export function hookCommand(nonce: string): string {
+  if (!/^[0-9a-f]+$/.test(nonce)) throw new Error('nonce 는 16진수 글자만');
+  return `node -e "${HOOK_CODE}" ${nonce}`;
+}
+export function hookSettings(nonce: string): string {
+  return JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: hookCommand(nonce), timeout: 5 }] }] } });
+}
+// --settings 는 늘 파일 경로로 넘긴다(.cmd·.exe 같은 한 경로). Windows .cmd 는 cmd 를 거쳐 인자에 " % 를 못 넘긴다(commandFor) → 그런 경로면 훅을 안 붙인다
+export const hookPathOk = (p: string) => !/["%\r\n]/.test(p);
+// 새 nonce 로 설정 JSON 을 <dir>/<id>.json 에 쓴다(폴더 없으면 만듦, 가능하면 0600). 채팅 매니저와 녹화 도구가 같이 쓴다
+export function prepareHookSettings(dir: string, id: string): { nonce: string; path: string } {
+  if (!/^[\w-]+$/.test(id)) throw new Error(`훅 설정 파일 이름이 이상하다: ${id}`);
+  const nonce = newHookNonce();
+  const file = path.join(dir, `${id}.json`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, hookSettings(nonce), { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows 등: 무시 */ }
+  return { nonce, path: file };
+}
+export const hookDir = (cfgDir: string) => path.join(cfgDir, 'hooks');
+// 서버 시작 때: 이전 실행이 남긴 훅 설정 파일을 지운다(실패는 무시)
+export function cleanupHookFiles(cfgDir: string): void {
+  const dir = hookDir(cfgDir);
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const n of names) if (n.endsWith('.json')) { try { fs.unlinkSync(path.join(dir, n)); } catch { /* 무시 */ } }
+}
+
+// claude 실행 인자 (테스트가 모양을 본다). env 는 CLAUDE_CONFIG_DIR 만 본다.
+// hookSettingsPath: 있으면 --include-hook-events + --settings <그 파일>(폴더 훅, prepareHookSettings)
+export function chatArgs(o: { model?: string; effort?: string; resume?: string; hookSettingsPath?: string | null }, env: NodeJS.ProcessEnv = {},
   platform: NodeJS.Platform = process.platform, homedir: string = os.homedir()): string[] {
   // --permission-mode default: 사용자 설정의 defaultMode(acceptEdits 등)가 채팅에 새지 않게 명시한다
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-prompt-tool', 'stdio', '--permission-mode', 'default'];
@@ -128,6 +168,7 @@ export function chatArgs(o: { model?: string; effort?: string; resume?: string }
   if (o.model) args.push('--model', o.model);
   if (o.effort) args.push('--effort', o.effort);
   if (o.resume) args.push('--resume', o.resume);
+  if (o.hookSettingsPath) args.push('--include-hook-events', '--settings', o.hookSettingsPath);
   return args;
 }
 
@@ -149,6 +190,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   const platform = o.platform ?? process.platform;
   const closeWaitMs = o.closeWaitMs ?? 8000;
   const deps: ChatDeps = { terminalAlive: () => false, workerModel: () => null, caps: () => claudeCaps(env, platform), ...o.deps };
+  // 이전 실행의 훅 설정 파일(nonce 들어 있음) 정리
+  cleanupHookFiles(cfgDir);
   const chats = new Map<string, Chat>();
   const globalListeners = new Set<(chat: ChatInfo, ev: ChatEvent) => void>();
   let limits: Limits | null = readLimits(cfgDir);
@@ -350,6 +393,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   function finishExit(c: Chat, code: number | null, signal: string | null) {
     if (c.info.state === 'ended') return;
     if (c.child.pid) { try { removePid(cfgDir, c.child.pid); } catch { /* 무시 */ } }
+    if (c.hookFile) { try { fs.unlinkSync(c.hookFile); } catch { /* 무시 */ } }
     cancelPending(c);
     emit(c, { type: 'exit', code, signal });
     if (code !== 0 && !c.closing) {
@@ -362,8 +406,8 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
   // effort 를 주면 이 claude 가 --effort 를 아는지 먼저 본다(노트북 2.1.248 에는 없을 수 있다). 나머지는 startNow 가 동기로
   async function start(project: { id: string; path: string }, opts: StartOptions): Promise<StartResult> {
     const effort = opts?.effort ?? undefined;
+    const caps = await deps.caps();
     if (effort !== undefined && typeof effort === 'string' && EFFORTS.includes(effort)) {
-      const caps = await deps.caps();
       if (caps.found && !caps.effort) throw new UserError(400, `이 Claude Code 버전에는 --effort 가 없다${caps.version ? ` (${caps.version})` : ''} — 노력도 없이 시작하거나 claude update`);
     }
     // 이어할 세션의 채팅이 닫는 중이면 끝나기를 기다린 뒤(최대 closeWaitMs) 보통 경로로 — 새로 띄운다
@@ -373,10 +417,11 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
       await Promise.race([closingChat.exited, new Promise<void>((r) => { timer = setTimeout(r, closeWaitMs); })]);
       clearTimeout(timer);
     }
-    return startNow(project, opts);
+    return startNow(project, opts, caps.found && caps.hookEvents);
   }
 
-  function startNow(project: { id: string; path: string }, opts: StartOptions): StartResult {
+  // hookEvents: 이 claude 가 --include-hook-events 를 안다(claudecaps). 모르면 폴더 훅을 안 붙인다 → 폴더를 몰라 자동 허용이 저절로 꺼진다
+  function startNow(project: { id: string; path: string }, opts: StartOptions, hookEvents: boolean): StartResult {
     const text = typeof opts.text === 'string' ? opts.text : '';
     if (!text.trim()) throw new UserError(400, '보낼 글이 비어 있다');
     const model = opts.model ?? undefined;
@@ -397,22 +442,37 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
     const limitWarnings = gate();
     const resolved = resolveCommand('claude', env, platform);
     if (!resolved) throw new UserError(400, 'claude 를 PATH 에서 못 찾았다 — Claude Code 를 설치하고 Plenum 을 다시 시작');
-    let cmd;
-    try { cmd = commandFor(resolved, chatArgs({ model, effort, resume }, env, platform), platform); } catch (e: any) { throw new UserError(400, e.message); }
-    const child = spawn(cmd.cmd, cmd.args, {
-      cwd: project.path, env: chatEnv(env), stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true, windowsVerbatimArguments: !!cmd.verbatim, detached: platform !== 'win32',
-    });
     const chatId = randomUUID();
+    // 폴더 훅: 설정 파일을 <설정 폴더>/hooks/<chatId>.json 에 쓰고 경로를 넘긴다. 경로에 " % 가 있거나 못 쓰면 훅 없이(자동 허용 꺼짐) + 안내
+    let hook: { nonce: string; path: string } | null = null;
+    let hookWarn: string | null = null;
+    if (hookEvents) {
+      const dir = hookDir(cfgDir);
+      if (!hookPathOk(dir)) hookWarn = `설정 폴더 경로에 " 나 % 가 있어 폴더 훅을 붙이지 않았다 — 같은 명령도 매번 승인 카드가 뜬다: ${dir}`;
+      else {
+        try { hook = prepareHookSettings(dir, chatId); } catch (e: any) { hookWarn = `폴더 훅 설정 파일을 못 써서 붙이지 않았다 — 같은 명령도 매번 승인 카드가 뜬다: ${e?.message ?? e}`; }
+      }
+    }
+    const dropHook = () => { if (hook) { try { fs.unlinkSync(hook.path); } catch { /* 무시 */ } } };
+    let cmd;
+    try { cmd = commandFor(resolved, chatArgs({ model, effort, resume, hookSettingsPath: hook?.path ?? null }, env, platform), platform); } catch (e: any) { dropHook(); throw new UserError(400, e.message); }
+    let child: ChildProcess;
+    try {
+      child = spawn(cmd.cmd, cmd.args, {
+        cwd: project.path, env: chatEnv(env), stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true, windowsVerbatimArguments: !!cmd.verbatim, detached: platform !== 'win32',
+      });
+    } catch (e) { dropHook(); throw e; }
     let resolveExited!: () => void;
     const c: Chat = {
       info: { chatId, projectId: project.id, sessionId: resume ?? null, state: 'starting', mode: null, model: model ?? null, effort: effort ?? null, version: null, lastSeq: 0 },
       projectId: project.id, child, events: [], listeners: new Set(), cards: new Map(), workers: new Map(),
-      driver: createClaudeDriver(), closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
+      driver: createClaudeDriver({ hookNonce: hook?.nonce ?? null }), ...(hook ? { hookFile: hook.path } : {}), closing: null, exited: new Promise<void>((r) => { resolveExited = r; }), stderr: '',
     };
     chats.set(chatId, c);
     if (child.pid) { try { addPid(cfgDir, child.pid, { platform }).catch(() => {}); } catch { /* 무시 */ } }
     emit(c, { type: 'state', state: 'starting' });
+    if (hookWarn) emit(c, { type: 'notice', level: 'warn', code: 'other', message: hookWarn });
 
     const dec = new StringDecoder('utf8');
     let buf = '';
