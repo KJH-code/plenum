@@ -1095,7 +1095,7 @@ Claude 메인과 Codex 워커가 같은 지침을 쓰려면 AGENTS.md 하나를 
 
 ## 다음 단계 작업 단위 (Plenum)
 
-jh-kit 쪽 단위(2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 Plenum 만. 순서는 P1 → P2 → (P3 ∥ P4) → P5 → P6. 각 단위는 **동작을 바꾸지 않는 것(P1·P2·P3)** 과 **새 기능(P4~P6)** 으로 나뉜다.
+jh-kit 쪽 단위(2.9.0, 처음 계획은 2.8.0)는 jh-kit 레포의 계획 문서에 있다. 여기는 Plenum 만. 순서는 P1 → P2 → (P3 ∥ P4) → P5 → P6. 각 단위는 **동작을 바꾸지 않는 것(P1·P2·P3)** 과 **새 기능(P4~P6)** 으로 나뉜다.
 
 ### P1. 어댑터 층 — 이벤트 모델 도입 (동작 그대로) — 완료(작업 브랜치, PR 검토 중)
 - 바꿀 파일: `app/server/provider/events.ts`(새, G절 타입), `app/server/provider/claude.ts`(새: `chat.ts` 의 줄 해석을 `decode(raw) → ProviderEvent[]` 로 옮김), `app/server/chat.ts`(해석 대신 `decode` 호출 + 내부 이벤트 → 지금 `ChatEvent` 로 다시 펼침), `app/test/fixtures/stream/` → `app/test/fixtures/providers/claude/2.1.323/`(이동 + `meta.json`), `app/test/contract.test.ts`(새), 기존 테스트의 fixture 경로

@@ -44,6 +44,8 @@ npm run pack -- --variant <이름>        # 또는 --variant-file <경로>
 
 `--variant`를 안 주면 `kit/variants/`가 없을 때는 판 없이(하네스 출력 그대로), 있으면 `variants/<kit.yaml name>.yaml`이 기본 판이다. 빼고 남은 파일에 뺀 이름 언급이 있으면 WARN으로 알려 준다.
 
+판 엔진은 파일을 빼고 글자를 바꿀 수만 있고 **새 파일을 더하지 못한다**(예: 공유판 zip에 마켓플레이스 `marketplace.json`을 넣기). 그런 일은 kit 레포 쪽 도구가 pack 결과를 감싸서 한다(jh-kit `tools/pack-kjh-lyj.js`, 2026-11-25).
+
 `kit/` 형식은 [KJH-code/jh-kit](https://github.com/KJH-code/jh-kit)의 README가 기준이다.
 
 ## 앱 실행 (Node 20.19 이상)
