@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { collectDeltas, splitLike, type DeltaGroup } from './deltas.ts';
 import { cp949Bytes, HONG, NAME_END, RATE_CREDIT_LEFT, WIN_HOME_CHECKS, isAscii, mojibakeVariants, privateWordsFromEnv, wordsGate } from './variants.ts';
 
 export const WIN_HOME = HONG;
@@ -231,8 +232,8 @@ export function redactValue(v: unknown, ctx: Ctx): unknown {
   return v;
 }
 
-// 녹화 한 줄 → 치환한 줄. null = 줄째 지운다
-export function redactLine(line: string, ctx: Ctx): string | null {
+// 녹화 한 줄 → 치환한 줄. null = 줄째 지운다. delta: 이어 붙여 치환한 조각(그 줄의 event.delta[field] 를 이 값으로)
+export function redactLine(line: string, ctx: Ctx, delta?: { field: string; text: string }): string | null {
   let o: any;
   try { o = JSON.parse(line); } catch { return redactString(line, ctx); }
   if (isObj(o) && isObj(o.msg)) {
@@ -241,7 +242,9 @@ export function redactLine(line: string, ctx: Ctx): string | null {
     if (m.type === 'control_response' && isObj(m.response)) blankDescriptions(m.response.response);
     if (m.type === 'system' && m.subtype === 'init') blankDescriptions(m);
   }
-  return JSON.stringify(redactValue(o, ctx));
+  const r: any = redactValue(o, ctx);
+  if (delta && isObj(r?.msg?.event?.delta)) r.msg.event.delta[delta.field] = delta.text;
+  return JSON.stringify(r);
 }
 
 // 치환 뒤 남은 위험. 비어 있지 않으면 파일을 쓰지 않는다
@@ -285,22 +288,42 @@ export function explainLine(raw: string, redacted: string, pad = 20): string[] {
   return out;
 }
 
+// 스트리밍 조각 묶음 하나: 이어 붙여 치환하고 원래 경계로 나눈다(조각 수·줄 수 그대로, 바뀐 구간 안 경계는 그 구간 끝으로)
+export function redactDeltaGroup(g: DeltaGroup, ctx: Ctx): { pieces: string[]; raw: string; red: string } {
+  const texts = g.pieces.map((p) => p.text);
+  const raw = texts.join('');
+  const red = redactString(raw, ctx);
+  return { pieces: splitLike(texts, red, raw), raw, red };
+}
+
+export type Risk = { line: number; what: string; joined?: { raw: string; red: string } };
 // fffd: 원본에 U+FFFD 가 있던 줄, fffdLeft: 치환 뒤에도 남은 줄(실패 아님 — 보고에 적기)
+// 스트리밍 조각은 같은 메시지·content block 끼리 이어 붙여 치환·검사한다(deltas.ts). 이어 붙일 수 없으면 위험으로 보고한다(fail-closed)
 export function redactLines(lines: string[], ctx: Ctx):
-  { out: string[]; fffd: number[]; fffdLeft: number[]; risks: { line: number; what: string }[] } {
+  { out: string[]; fffd: number[]; fffdLeft: number[]; risks: Risk[] } {
   const out: string[] = [];
   const fffd: number[] = [];
   const fffdLeft: number[] = [];
-  const risks: { line: number; what: string }[] = [];
+  const risks: Risk[] = [];
+  const { groups, problems } = collectDeltas(lines);
+  for (const p of problems) risks.push({ line: p.line + 1, what: `스트리밍 조각을 이어 붙일 수 없음: ${p.why}` });
+  const override = new Map<number, { field: string; text: string }>();
+  for (const g of groups) {
+    if (g.pieces.length < 2) continue;
+    const r = redactDeltaGroup(g, ctx);
+    g.pieces.forEach((p, k) => override.set(p.line, { field: p.field, text: r.pieces[k] }));
+    for (const what of findRisks(r.red, ctx)) risks.push({ line: g.pieces[0].line + 1, what: `${what} (이어 붙인 스트리밍 조각)`, joined: { raw: r.raw, red: r.red } });
+  }
   lines.forEach((l, i) => {
     if (!l.trim()) return;
     if (/\uFFFD|\\u[fF][fF][fF][dD]/.test(l)) fffd.push(i + 1);   // 문자 그대로 또는 JSON 이스케이프 \uFFFD
-    const r = redactLine(l, ctx);
+    const r = redactLine(l, ctx, override.get(i));
     if (r === null) return;
     if (r.includes('\uFFFD')) fffdLeft.push(i + 1);
     for (const what of findRisks(r, ctx)) risks.push({ line: i + 1, what });
     out.push(r);
   });
+  risks.sort((a, b) => a.line - b.line);
   return { out, fffd, fffdLeft, risks };
 }
 
@@ -352,6 +375,11 @@ function main(argv: string[]): number {
   if (risks.length || metaRisks.length) {
     for (const r of risks) console.error(`치환 뒤 남음: ${r.line}번째 줄 — ${r.what}`);
     if (explain) for (const n of [...new Set(risks.map((r) => r.line))]) {
+      const j = risks.find((r) => r.line === n && r.joined)?.joined;
+      if (j) {
+        console.error(`${n}번째 줄부터 이어 붙인 스트리밍 조각 (가림: 한글→가 ASCII→a 숫자→9 U+FFFD→? 그 밖 비ASCII→*)`);
+        for (const e of explainLine(j.raw, j.red)) console.error(e);
+      }
       const l = rawLines[n - 1]; const r = redactLine(l, ctx) ?? '';
       console.error(`${n}번째 줄 (가림: 한글→가 ASCII→a 숫자→9 U+FFFD→? 그 밖 비ASCII→*)`);
       for (const e of explainLine(l, r)) console.error(e);

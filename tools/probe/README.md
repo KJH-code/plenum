@@ -16,6 +16,10 @@ npm run probe:redact -- <out>/<장면>-raw.jsonl [--dest <폴더>] [--allow-empt
   `--explain` 은 거부될 때 걸린 줄의 홈 경로 자리(치환 뒤 걸린 곳·원본의 `Users` 근처, 앞뒤 20자)를 이름 글자만 가려 찍는다(한글→가, ASCII→a, 숫자→9, U+FFFD→?, 그 밖 비ASCII→*). 원본을 보낼 수 없을 때 진단용.
   U+FFFD 가 있던 줄은 번호를 알린다. 홈 폴더 이름 자리가 U+FFFD·깨진 형태로만 되어 있으면(원래 바이트를 잃은 사용자 이름) 그 자리는 `홍길동` 으로 바꾼다. 그 밖에 남은 U+FFFD 는 실패가 아니다(보고에 적는다).
 
+## 스트리밍 조각(delta)
+
+이름·홈 경로가 스트리밍 조각 경계에서 끊기면 줄 단위로는 안 보인다. 그래서 redact·scan·개인 정보 검사는 `stream_event` 의 `content_block_delta` 중 `text_delta.text`·`input_json_delta.partial_json`·`thinking_delta.thinking` 을 같은 메시지·같은 content block(`session_id`·`parent_tool_use_id`·`api_message_id`(없으면 앞 `message_start` 의 id)·`event.index`)끼리 이어 붙인 문자열에서도 치환·검사한다(`deltas.ts`, `signature_delta` 는 건드리지 않음). redact 는 이어 붙여 치환한 뒤 문자 단위 diff 로 **원래 조각 경계로 되돌린다** — 줄 수·조각 수는 원본 그대로(빈 조각 가능)다. 바뀐 구간 안에 떨어진 경계와, 끊는 글자(공백·따옴표·괄호 등) 없이 바뀐 구간 바로 앞에 붙은 경계(`C:\\Users\\|이름`)는 그 바뀐 구간의 끝으로 옮긴다(치환 값 전체가 앞 조각에, 이름 조각이 남지 않게). 이어 붙일 수 없으면(JSON 아닌 줄, 녹화 줄 모양 아님, 묶음 키 없음, 같은 블록에 delta 종류가 섞임) fail-closed 로 실패한다. scan 의 로그 쪽(`git log -p`)은 diff 줄 단위라 조각을 이어 붙이지 않는다 — HEAD 트리 쪽만 이어 붙인다.
+
 ## 병합 전 검사 (`probe:scan`)
 
 ```

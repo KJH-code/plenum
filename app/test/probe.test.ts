@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { APP } from './helpers.ts';
 import { buildContext, findRisks, mergeMeta, redactLine, redactLines, redactString } from '../../tools/probe/redact.ts';
 import { commandOf, fillPrompt, outcomeOf, parseArgs, parseScene, pickPermission, pickQuestion, psQuoteInner, randToken, workdirOf, writeIn } from '../../tools/probe/record.ts';
+import { diffSegments, joinedDeltaTexts, mapBoundaries, splitLike } from '../../tools/probe/deltas.ts';
 import { EMPTY_WORDS, WIN_HOME_CHECKS, cp949Bytes, mojibakeVariants, wordsGate } from '../../tools/probe/variants.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { byteFormsOf, formsOf, parseArgs as scanParseArgs, parseLsTree, scanFile, scanLog, wordShape } from '../../tools/probe/scan.ts';
@@ -388,7 +389,7 @@ describe('scan', () => {
   fs.mkdirSync(repo);
   g('init', '-q');
   put('clean.txt', 'nothing here\n');
-  put('app/test/fixtures/providers/claude/9.9.9/ok.jsonl', '{"a":"홍길동"}\n');
+  put('app/test/fixtures/providers/claude/9.9.9/ok.jsonl', '{"dir":"out","msg":{"a":"홍길동"}}\n');
   g('add', '.'); g('commit', '-q', '-m', 'first');
   const base = g('rev-parse', 'HEAD').trim();
   put('a.txt', 'line1\nhello ZorBlax\n');
@@ -533,5 +534,91 @@ describe('redact --explain 가림', () => {
     const lines = explainLine('"cwd":"D:\\\\Users\\\\gapdol\\\\x"', '"cwd":"D:\\\\Users\\\\gapdol\\\\x"');
     expect(lines.some((l) => l.includes('Windows 사용자 폴더'))).toBe(true);
     expect(lines.join('\n')).not.toMatch(/gapdol/i);
+  });
+});
+
+describe('스트리밍 조각 경계(delta 이어 붙이기)', () => {
+  const PX = { homedir: '/home/hong', tmpdir: '/tmp' };
+  const ev = (index: number, kind: string, field: string, text: string, msg = 'msg_1') => JSON.stringify({ dir: 'out', t: 1, msg: {
+    type: 'stream_event', event: { type: 'content_block_delta', index, delta: { type: kind, [field]: text } },
+    session_id: 's1', parent_tool_use_id: null, uuid: 'u', api_message_id: msg } });
+  const pj = (t: string, i = 1) => ev(i, 'input_json_delta', 'partial_json', t);
+  const td = (t: string, i = 0) => ev(i, 'text_delta', 'text', t);
+  const mv = mojibakeVariants('갑돌').variants[0];
+  const ctx = () => buildContext({ ...PX, env: { USERPROFILE: 'C:\\Users\\갑돌', PLENUM_PRIVATE_WORDS: '갑돌,gapdol,갑을순' }, platform: 'win32' });
+  const pieceOf = (line: string) => { const d = JSON.parse(line).msg.event.delta; return d.partial_json ?? d.text ?? d.thinking; };
+  const FRAG = ['갑', '돌', '을순', 'gap', 'dol', mv.slice(0, 2), mv.slice(-2)];
+  const cases: [string, string[], string][] = [
+    ['(a) partial_json 홈 경로 Users\\\\ 뒤', [pj('{"command": "dir C:\\\\Users\\\\'), pj('갑돌\\\\proj"}')], '{"command": "dir C:\\\\Users\\\\홍길동\\\\proj"}'],
+    ['(b) 이름 글자 중간 갑|돌', [pj('{"p": "C:\\\\Users\\\\갑'), pj('돌\\\\x"}')], '{"p": "C:\\\\Users\\\\홍길동\\\\x"}'],
+    ['(b) gap|dol', [td('login gap'), td('dol ok')], 'login hong ok'],
+    ['(c) text_delta 문장 안', [td('my name is 갑을'), td('순 and more')], 'my name is 홍길동 and more'],
+    ['(d) 3조각', [pj('"C:\\\\Us'), pj('ers\\\\갑'), pj('돌\\\\p"')], '"C:\\\\Users\\\\홍길동\\\\p"'],
+    ['(e) 깨진 형태(UTF-8→Latin-1) 쪼개짐', [td(`x ${mv.slice(0, 3)}`), td(`${mv.slice(3)} y`)], 'x 홍길동 y'],
+  ];
+  for (const [name, lines, joined] of cases) {
+    test(`redact: ${name} — 조각·줄 수 그대로, 조각에 이름 일부 없음, 이어 붙이면 치환 값, risks 0`, () => {
+      const all = [JSON.stringify({ dir: 'in', msg: { type: 'user' } }), ...lines, td('다른 블록', 5)];
+      const r = redactLines(all, ctx());
+      expect(r.risks).toEqual([]);
+      expect(r.out.length).toBe(all.length);
+      const pieces = r.out.slice(1, 1 + lines.length).map(pieceOf);
+      expect(pieces.length).toBe(lines.length);
+      expect(pieces.join('')).toBe(joined);
+      for (const p of pieces) for (const f of FRAG) expect(p.toLowerCase().includes(f.toLowerCase()), `${JSON.stringify(p)} ⊃ ${f}`).toBe(false);
+      expect(pieceOf(r.out[r.out.length - 1])).toBe('다른 블록');
+      // 원문(치환 전)은 이어 붙인 검사가 잡는다: redact findRisks·scan
+      const raw = lines.join('\n');
+      const j = joinedDeltaTexts(raw.split('\n'), { strict: true });
+      expect(j.problems).toEqual([]);
+      expect(j.texts.some((t) => findRisks(t.text, ctx()).length > 0)).toBe(true);
+      const hits = scanFile('app/test/fixtures/providers/claude/9/x.jsonl', Buffer.from(raw + '\n'), formsOf(['갑돌', 'gapdol', '갑을순']), []);
+      expect(hits.some((h) => h.endsWith('(이어 붙인 스트리밍 조각)')), hits.join('\n')).toBe(true);
+      expect(hits.join('\n')).not.toMatch(/갑|돌|gap|dol/i);
+    });
+  }
+
+  test('scan: 이름이 쪼개진 녹화 jsonl 을 이어 붙여 잡고, 출력에 낱말을 찍지 않는다', () => {
+    const raw = [pj('"C:\\\\Users\\\\갑'), pj('돌\\\\p"'), td('gap'), td('dol')].join('\n') + '\n';
+    const forms = formsOf(['갑돌', 'gapdol']);
+    const hits = scanFile('app/test/fixtures/providers/claude/9/x.jsonl', Buffer.from(raw), forms, []);
+    expect(hits).toEqual(['낱말 #1 형태 1: app/test/fixtures/providers/claude/9/x.jsonl:1 (이어 붙인 스트리밍 조각)', '낱말 #2 형태 1: app/test/fixtures/providers/claude/9/x.jsonl:3 (이어 붙인 스트리밍 조각)']);
+    expect(scanFile('other/x.jsonl', Buffer.from(raw), forms, [])).toEqual([]);   // 녹화 폴더 밖은 줄 단위만
+  });
+
+  test('이어 붙일 수 없으면 fail-closed: JSON 아님·녹화 줄 모양 아님·묶음 키 없음·종류 섞임', () => {
+    const noKey = JSON.stringify({ dir: 'out', msg: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'a' } }, session_id: 's', parent_tool_use_id: null } });
+    expect(joinedDeltaTexts(['not json', '{"x":1}', noKey, td('a'), ev(0, 'thinking_delta', 'thinking', 'b')], { strict: true }).problems.map((p) => p.why)).toEqual([
+      'JSON 이 아닌 줄', '녹화 줄 모양({dir, …})이 아님', 'delta 묶음 키(메시지 id·index)가 없음', '같은 블록에 delta 종류가 섞임(text_delta·thinking_delta)']);
+    // message_start 의 id 로 묶음 키를 채운다, signature_delta 는 묶지 않는다
+    const ms = JSON.stringify({ dir: 'out', msg: { type: 'stream_event', event: { type: 'message_start', message: { id: 'm9' } }, session_id: 's', parent_tool_use_id: null } });
+    const sig = ev(0, 'signature_delta', 'signature', 'zz');
+    expect(joinedDeltaTexts([ms, noKey, noKey, sig], { strict: true })).toEqual({ texts: [{ line: 1, text: 'aa' }], problems: [] });
+    expect(redactLines(['not json', noKey], ctx()).risks.map((r) => r.what)).toEqual(['스트리밍 조각을 이어 붙일 수 없음: delta 묶음 키(메시지 id·index)가 없음']);
+    expect(scanFile('app/test/fixtures/providers/x.jsonl', Buffer.from(`${td('a')}\n${ev(0, 'thinking_delta', 'thinking', 'b')}\n`), formsOf(['zz']), [])).toEqual(['fail-closed: app/test/fixtures/providers/x.jsonl:2 — 스트리밍 조각을 이어 붙일 수 없음(같은 블록에 delta 종류가 섞임(text_delta·thinking_delta))']);
+  });
+
+  test('경계 옮기기: 같은 구간은 그대로, 바뀐 구간 안 경계는 그 구간 끝, 시작에 걸린 경계는 시작, 빈 조각 유지', () => {
+    expect(splitLike(['ab', 'cd'], 'abcd')).toEqual(['ab', 'cd']);
+    expect(splitLike(['xx갑', '돌yy'], 'xx홍길동yy')).toEqual(['xx홍길동', 'yy']);
+    expect(splitLike(['xx', '갑돌yy'], 'xx홍길동yy')).toEqual(['xx홍길동', 'yy']);          // 끊는 글자 없이 바로 이어지면 같은 낱말 → 앞 조각으로
+    expect(splitLike(['xx ', '갑돌 yy'], 'xx 홍길동 yy')).toEqual(['xx ', '홍길동 yy']);      // 공백에서 끊긴 경계는 그대로
+    expect(splitLike(['"C:\\Users\\', '갑돌\\p"'], '"C:\\Users\\홍길동\\p"')).toEqual(['"C:\\Users\\홍길동', '\\p"']);
+    expect(splitLike(['"C:\\Us', 'ers\\갑돌 x'], '"C:\\Users\\홍길동 x')).toEqual(['"C:\\Users\\홍길동', ' x']);
+    expect(splitLike(['a갑', '', '돌b'], 'a홍길동b')).toEqual(['a홍길동', '', 'b']);
+    expect(splitLike(['gap', 'dol!'], 'hong!')).toEqual(['hong', '!']);
+    expect(splitLike(['gapd', 'ol!'], 'hong!')).toEqual(['hong', '!']);            // gapdol→hong 의 같은 'o' 에 경계가 남지 않는다(짧은 같은 구간 합치기)
+    expect(splitLike(['"C:\\\\Users\\\\', '갑돌\\\\p"'], '"C:\\\\Users\\\\홍길동\\\\p"')).toEqual(['"C:\\\\Users\\\\홍길동', '\\\\p"']); // 노트북 185번째 줄 꼴(JSON \\\\ 뒤에서 끊김)
+    expect(splitLike(['', 'a'], 'a')).toEqual(['', 'a']);
+    expect(splitLike(['a', ''], 'a')).toEqual(['a', '']);
+    expect(splitLike(['1갑돌2', '갑', '돌3'], '1홍길동2홍길동3')).toEqual(['1홍길동2홍길동', '', '3']);   // 사이 1글자 같은 구간은 바뀐 구간에 합친다
+    expect(splitLike(['1갑돌 2 ', '갑', '돌3'], '1홍길동 2 홍길동3')).toEqual(['1홍길동 2 ', '홍길동', '3']);
+    expect(mapBoundaries(diffSegments('abcXYZdef', 'abcQdef'), [4, 6])).toEqual([4, 4]);
+    expect(mapBoundaries(diffSegments('ab XYZ', 'ab Q'), [1, 3])).toEqual([1, 3]);              // 바뀐 구간 시작의 경계는 시작
+    expect(mapBoundaries(diffSegments('ab XYZ', 'ab Q'), [1, 3], 'ab XYZ')).toEqual([1, 3]);    // 앞이 공백이면 붙이지 않는다
+    expect(mapBoundaries(diffSegments('abXYZ', 'abQ'), [2])).toEqual([2]);
+    expect(mapBoundaries(diffSegments('abXYZ', 'abQ'), [2], 'abXYZ')).toEqual([3]);              // 같은 낱말이면 바뀐 구간 끝으로
+    // 결정적
+    expect(diffSegments('the gapdol and gapdol', 'the hong and hong')).toEqual(diffSegments('the gapdol and gapdol', 'the hong and hong'));
   });
 });

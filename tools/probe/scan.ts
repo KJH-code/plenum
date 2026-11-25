@@ -8,6 +8,7 @@
 import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { joinedDeltaTexts } from './deltas.ts';
 import { FIXTURE_STRICT_DIR, cp949Bytes, escapeForms, fixtureBytesProblem, foldEscapes, hasWord, isAscii, mojibakeVariants, privateWordsFromEnv } from './variants.ts';
 
 export const DEFAULT_RANGE = '1b8402f..HEAD';
@@ -104,7 +105,16 @@ export function scanFile(rel: string, buf: Buffer, forms: Form[], bforms: ByteFo
   if (shown !== rel) for (const f of hitsIn(rel, forms)) out.push(`${label(f)}: (파일 이름) ${shown}`);
   if (rel.startsWith(FIXTURE_STRICT_DIR)) { const p = fixtureBytesProblem(buf); if (p) out.push(`fail-closed: ${shown} — ${p}`); }
   const text = !buf.subarray(0, 8000).includes(0);
-  if (text) buf.toString('utf8').split('\n').forEach((line, i) => { for (const f of hitsIn(line, forms)) out.push(`${label(f)}: ${shown}:${i + 1}`); });
+  if (text) {
+    const lines = buf.toString('utf8').split('\n');
+    lines.forEach((line, i) => { for (const f of hitsIn(line, forms)) out.push(`${label(f)}: ${shown}:${i + 1}`); });
+    // 녹화 jsonl: 스트리밍 조각을 이어 붙인 문자열도(이름이 조각 경계에서 끊긴 경우). 이어 붙일 수 없으면 fail-closed
+    if (rel.startsWith(FIXTURE_STRICT_DIR) && rel.endsWith('.jsonl') && fixtureBytesProblem(buf) === null) {   // 바이트가 틀리면 위에서 이미 fail-closed
+      const j = joinedDeltaTexts(lines, { strict: true });
+      for (const p of j.problems) out.push(`fail-closed: ${shown}:${p.line + 1} — 스트리밍 조각을 이어 붙일 수 없음(${p.why})`);
+      for (const t of j.texts) for (const f of hitsIn(t.text, forms)) out.push(`${label(f)}: ${shown}:${t.line + 1} (이어 붙인 스트리밍 조각)`);
+    }
+  }
   for (const f of byteHits(buf, bforms, text && fixtureBytesProblem(buf) === null)) out.push(`${blabel(f)}: ${shown}`);
   return out;
 }

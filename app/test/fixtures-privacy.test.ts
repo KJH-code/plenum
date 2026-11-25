@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from 'vitest';
 import { APP } from './helpers.ts';
+import { joinedDeltaTexts } from '../../tools/probe/deltas.ts';
 import { RATE_CREDIT_LEFT, WIN_HOME_CHECKS, escapeForms, fixtureBytesProblem, foldEscapes, hasWord, mojibakeVariants, privateWordsFromEnv } from '../../tools/probe/variants.ts';
 
 const ROOT = path.join(APP, 'test', 'fixtures');
@@ -22,6 +23,14 @@ function files(dir: string): string[] {
 }
 const all = files(ROOT);
 const rel = (p: string) => path.relative(ROOT, p);
+// 녹화 jsonl(providers/**/*.jsonl)은 스트리밍 조각을 같은 메시지·content block 끼리 이어 붙인 문자열도 검사한다
+// (이름·홈 경로가 조각 경계에서 끊기면 파일 글에서는 안 보인다). 이어 붙일 수 없으면 아래 fail-closed 테스트가 실패
+const isRecording = (f: string) => rel(f).split(path.sep)[0] === 'providers' && f.endsWith('.jsonl');
+export function textsOfContent(content: string, recording: boolean): string[] {
+  if (!recording) return [content];
+  return [content, ...joinedDeltaTexts(content.split('\n'), { strict: true }).texts.map((t) => t.text)];
+}
+const textsOf = (f: string) => textsOfContent(fs.readFileSync(f, 'utf8'), isRecording(f));
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const ALLOWED_EMAIL = /(@example\.invalid|@users\.noreply\.github\.com|^noreply@anthropic\.com)$/i;
@@ -33,6 +42,20 @@ const HOME_PATHS: [string, RegExp][] = [
   ['/root 홈', /(?<![A-Za-z0-9_-])\/root\//],
   ['hong 아닌 /home', /\/home\/(?!hong\/)[^/"\\\s]+\//],
 ];
+
+function homeHits(texts: string[]): string[] {
+  const bad: string[] = [];
+  for (const t of texts) for (const [name, re] of HOME_PATHS) { const m = re.exec(t); if (m) bad.push(`${name} "${t.slice(Math.max(0, m.index - 20), m.index + 40)}"`); }
+  return bad;
+}
+
+test('녹화 jsonl 은 스트리밍 조각을 이어 붙일 수 있다(JSON·녹화 줄 모양·묶음 키·종류 안 섞임 — 아니면 fail-closed)', () => {
+  const recs = all.filter(isRecording);
+  expect(recs.length).toBeGreaterThanOrEqual(6);
+  const bad: string[] = [];
+  for (const f of recs) for (const p of joinedDeltaTexts(fs.readFileSync(f, 'utf8').split('\n'), { strict: true }).problems) bad.push(`${rel(f)}:${p.line + 1}: ${p.why}`);
+  expect(bad).toEqual([]);
+});
 
 test('검사할 fixture 가 있다 (0개면 아래 검사가 공짜로 통과한다)', () => {
   expect(all.filter((f) => f.endsWith('.jsonl')).length).toBeGreaterThanOrEqual(10);
@@ -49,16 +72,13 @@ test('녹화 fixture(providers/**)는 올바른 UTF-8 이고 BOM·NUL 이 없다
 
 test('fixture 에 허용 목록 밖 이메일이 없다', () => {
   const bad: string[] = [];
-  for (const f of all) for (const m of fs.readFileSync(f, 'utf8').matchAll(EMAIL)) if (!ALLOWED_EMAIL.test(m[0])) bad.push(`${rel(f)}: ${m[0]}`);
+  for (const f of all) for (const t of textsOf(f)) for (const m of t.matchAll(EMAIL)) if (!ALLOWED_EMAIL.test(m[0])) bad.push(`${rel(f)}: ${m[0]}`);
   expect([...new Set(bad)]).toEqual([]);
 });
 
 test('fixture 에 실제 홈 경로(C:\\Users\\ 등)가 없다', () => {
   const bad: string[] = [];
-  for (const f of all) {
-    const t = fs.readFileSync(f, 'utf8');
-    for (const [name, re] of HOME_PATHS) { const m = re.exec(t); if (m) bad.push(`${rel(f)}: ${name} "${t.slice(Math.max(0, m.index - 20), m.index + 40)}"`); }
-  }
+  for (const f of all) for (const h of homeHits(textsOf(f))) bad.push(`${rel(f)}: ${h}`);
   expect(bad).toEqual([]);
 });
 
@@ -69,8 +89,7 @@ const isZero = (u: string) => /^[0-]+[0-9]?$/.test(u.replace(/-4000-8000-/, '-00
 
 test('fixture 에 계정·조직 UUID 가 없다 (치환한 0 UUID 만 허용)', () => {
   const bad: string[] = [];
-  for (const f of all) {
-    const t = fs.readFileSync(f, 'utf8');
+  for (const f of all) for (const t of textsOf(f)) {
     for (const m of t.matchAll(ACCOUNT_FIELD)) if (!isZero(m[2])) bad.push(`${rel(f)}: ${m[0].slice(0, 60)}`);
     if (SYNCED_PATH.test(t)) bad.push(`${rel(f)}: 플러그인 경로에 조직·계정 UUID`);
   }
@@ -95,13 +114,13 @@ const RATE_CREDIT = RATE_CREDIT_LEFT;
 test.skipIf(words.length === 0)('PLENUM_PRIVATE_WORDS 에 적은 낱말(이메일 아이디 등)과 그 깨진 형태가 없다', () => {
   for (const w of words) for (const warn of mojibakeVariants(w).warnings) console.warn(`낱말 #${words.indexOf(w) + 1}: ${warn}`);
   const bad: string[] = [];
-  for (const f of all) for (const h of wordHits(fs.readFileSync(f, 'utf8'), words)) bad.push(`${rel(f)}: ${h}`);
+  for (const f of all) for (const t of textsOf(f)) for (const h of wordHits(t, words)) bad.push(`${rel(f)}: ${h}`);
   expect(bad).toEqual([]);
 });
 
 test('fixture 에 RateLimitResetCredit 실제 값이 없다 (치환 값은 RateLimitResetCredit_0)', () => {
   const bad: string[] = [];
-  for (const f of all) if (RATE_CREDIT.test(fs.readFileSync(f, 'utf8'))) bad.push(rel(f));
+  for (const f of all) if (textsOf(f).some((t) => RATE_CREDIT.test(t))) bad.push(rel(f));
   expect(bad).toEqual([]);
 });
 
@@ -174,4 +193,19 @@ test('검사 규칙이 실제로 잡는다 (규칙이 아무것도 못 잡으면
   expect(RATE_CREDIT.test('ratelimitresetcredit_Zq-9')).toBe(true);
   expect(RATE_CREDIT.test('RateLimitResetCredit_0-x')).toBe(true);
   expect(RATE_CREDIT.test('RateLimitResetCredit_0 ')).toBe(false);
+});
+
+test('이어 붙인 스트리밍 조각 검사가 실제로 잡는다 (조각 경계에서 끊긴 홈·낱말)', () => {
+  const ev = (t: string, field = 'partial_json', kind = 'input_json_delta') => JSON.stringify({ dir: 'out', msg: { type: 'stream_event',
+    event: { type: 'content_block_delta', index: 1, delta: { type: kind, [field]: t } }, session_id: 's', parent_tool_use_id: null, api_message_id: 'm' } });
+  const home = [ev('{"p": "C:\\\\Users\\\\누'), ev('군가\\\\x"}')].join('\n');
+  expect(homeHits([home])).not.toEqual([]);                                  // 파일 글로도 Users\\ 뒤 끊김은 잡힌다
+  const name = [ev('{"p": "C:\\\\Users\\\\홍길동 owner gap'), ev('dol"}')].join('\n');
+  expect(wordHits(name, ['gapdol'])).toEqual([]);                            // 파일 글로는 못 잡는다
+  expect(textsOfContent(name, true).flatMap((t) => wordHits(t, ['gapdol']))).toEqual(['낱말 #1']);
+  const text = [ev('my name is 갑', 'text', 'text_delta'), ev('돌', 'text', 'text_delta')].join('\n');
+  expect(textsOfContent(text, true).flatMap((t) => wordHits(t, ['갑돌']))).toEqual(['낱말 #1']);
+  const split = [ev('"C:\\\\Users\\\\누'), ev('군가\\\\x"')].join('\n');
+  expect(textsOfContent(split, true).slice(1).flatMap((t) => homeHits([t]))).not.toEqual([]);
+  expect(textsOfContent(name, false)).toEqual([name]);                        // 녹화 폴더 밖은 이어 붙이지 않는다
 });
