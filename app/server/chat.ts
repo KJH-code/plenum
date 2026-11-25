@@ -288,6 +288,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
           ...(typeof ev.reason === 'string' ? { description: ev.reason } : {}),
           sessionRules: ev.ext?.claude.sessionRules ?? [],
           sessionAllow: ev.options.some((o) => o.optionId === 'allow_session'),
+          remembers: ev.ext?.claude.remembers === true,
           ...(diff ? { diff } : {}),
         };
         addCard(c, card);
@@ -324,6 +325,11 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
         const requestId = ev.requestId;
         try { write(c, ev.reply); } catch { /* 끝남 */ }
         const subtype = ev.hint ?? '';
+        // 이미 있는 카드와 같은 id(드라이버가 새 요청만 거절함): 기존 카드는 그대로 두고 안내만
+        if (c.cards.has(requestId)) {
+          emit(c, { type: 'notice', level: 'warn', code: 'other', message: `같은 id(${requestId})의 요청이 또 와서 새 요청을 거절했다 — 먼저 뜬 카드는 그대로 답할 수 있다` });
+          return;
+        }
         const card: Card = { kind: 'unknown', requestId, subtype, version: c.info.version };
         c.cards.set(requestId, { card, resolved: true });
         emit(c, { type: 'card', card });

@@ -99,10 +99,11 @@ function permBody(input: unknown): string {
   const s = JSON.stringify(input ?? null, null, 2) ?? '';
   return s.length > 800 ? `${s.slice(0, 800)}…` : s;
 }
-export function resolvedText(r: Resolved): string {
+// remembers: 세션 허용을 Plenum 이 기억하는 카드(Bash·PowerShell). 아니면 Claude Code 규칙(addRules)에 맡긴 것
+export function resolvedText(r: Resolved, remembers = false): string {
   switch (r.outcome) {
     case 'allow': return '허용';
-    case 'allow-session': return '허용 · 이 세션 동안 같은 명령은 Plenum이 대신 허용';
+    case 'allow-session': return remembers ? '허용 · 이 세션 동안 같은 명령은 Plenum이 대신 허용' : '허용 · 이 세션 동안 다시 묻지 않음';
     case 'deny': return r.detail ? `거부함 · "${r.detail}"를 Claude에게 전달` : '거부함';
     case 'answered': return `→ ${r.detail ?? ''}`;
     case 'cancelled': return '답하기 전에 턴이 끝났다';
@@ -138,7 +139,7 @@ export function PermissionCard({ card, resolved, cwd, onReply }: { card: Extract
         <>
           <div className="row-wrap">
             <button type="button" className="btn primary" disabled={busy} onClick={() => send({ requestId: card.requestId, action: 'allow' })}>허용</button>
-            {(card.sessionAllow ?? card.sessionRules.length > 0) && (
+            {(card.sessionAllow ?? (card.remembers === true || card.sessionRules.length > 0)) && (
               <button type="button" className="btn" disabled={busy} onClick={() => send({ requestId: card.requestId, action: 'allow-session' })}>
                 {card.sessionRules.length > 0 ? <>이 세션 동안 <code>{rules}</code> 허용</> : '이 세션 동안 같은 명령 허용'}
               </button>
@@ -156,7 +157,7 @@ export function PermissionCard({ card, resolved, cwd, onReply }: { card: Extract
           )}
         </>
       )}
-      {resolved && <span className={resolved.outcome === 'deny' ? 'bad-text' : resolved.outcome === 'cancelled' ? 'muted' : 'ok-text'} data-testid="card-result">{resolvedText(resolved)}</span>}
+      {resolved && <span className={resolved.outcome === 'deny' ? 'bad-text' : resolved.outcome === 'cancelled' ? 'muted' : 'ok-text'} data-testid="card-result">{resolvedText(resolved, card.remembers === true)}</span>}
       {err && <p className="error" role="alert">{err}</p>}
     </div>
   );

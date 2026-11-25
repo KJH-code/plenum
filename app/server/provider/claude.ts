@@ -21,7 +21,7 @@ export const BRANCHES = [
   'stream/no-event', 'stream/sub', 'stream/message_start', 'stream/text_delta', 'stream/text_delta-no-id', 'stream/other',
   'assistant/no-content', 'assistant/text', 'assistant/tool_use', 'assistant/other-block',
   'user/no-content', 'user/tool_result',
-  'control_request/field', 'control_request/question', 'control_request/permission', 'control_request/permission-session', 'control_request/permission-auto', 'control_request/other',
+  'control_request/field', 'control_request/question', 'control_request/permission', 'control_request/permission-session', 'control_request/permission-auto', 'control_request/duplicate-id', 'control_request/other',
   'control_response',
   'rate_limit/field', 'rate_limit/usage', 'rate_limit/rejected',
   'result',
@@ -136,6 +136,25 @@ export function changesDirectory(command: string): boolean {
   return CHDIR.test(command);
 }
 const commandOfInput = (input: unknown): string | null => (isObj(input) && typeof input.command === 'string' ? input.command : null);
+// 작업 폴더 세대를 올리는 tool_use: 폴더를 바꾸는 명령, 또는 하위 에이전트(Agent·Task — 안에서 무엇을 할지 모른다 → 안전한 쪽)
+const bumpsCwdEpoch = (name: string, input: unknown): boolean => {
+  if (name === 'Agent' || name === 'Task') return true;
+  const cmd = commandOfInput(input);
+  return cmd !== null && changesDirectory(cmd);
+};
+// Plenum 이 세션 허용을 기억하는 도구(입력 모양을 아는 것만). MCP 등 다른 command 도구는 기억하지 않는다
+const REMEMBER_TOOLS = new Set(['Bash', 'PowerShell']);
+// 키 정렬한 JSON(중첩 객체도). 배열 순서는 그대로
+function canonical(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (isObj(v)) { const o: Record<string, unknown> = {}; for (const k of Object.keys(v).sort()) o[k] = canonical(v[k]); return o; }
+  return v;
+}
+// 키에 넣을 입력: description 만 뺀 전체(dangerouslyDisableSandbox·run_in_background·timeout 이 달라도 다른 키)
+function inputKey(input: Record<string, any>): string {
+  const { description: _d, ...rest } = input;
+  return JSON.stringify(canonical(rest));
+}
 
 // 도구 이름 → kind. 승인 카드·요약은 이름이 아니라 command 칸 유무로 다루므로(Windows PowerShell) 여기 값은 참고용
 const TOOL_KIND: Record<string, ToolKind> = {
@@ -224,6 +243,11 @@ export function createClaudeDriver() {
       // 답을 안 하면 claude 가 멈춘다 → error 로 거절하는 답을 같이 올린다(앱이 쓴다)
       return [unknown(raw, 'event', String(req.subtype ?? ''), { answeredWithDefault: true, reply: unhandled(requestId), requestId })];
     }
+    // 아직 답하지 않은 요청과 같은 id: 기존 카드(pending)는 그대로 두고 새 요청만 거절한다(덮어쓰면 첫 카드의 답이 엉뚱한 입력·키로 간다)
+    if (pending.has(requestId)) {
+      hit('control_request/duplicate-id');
+      return [unknown(raw, 'field', 'can_use_tool/duplicate-id', { answeredWithDefault: true, reply: unhandled(requestId), requestId })];
+    }
     const toolName = String(req.tool_name ?? '');
     const toolUseId = str(req.tool_use_id) ?? undefined;
     if (toolName === 'AskUserQuestion') {
@@ -237,10 +261,11 @@ export function createClaudeDriver() {
     }
     hit('control_request/permission');
     const sessionRules = sessionRulesFrom(req.permission_suggestions);
-    // 명령 도구(input.command 가 문자열): 키 = [도구, 명령 그대로, 작업 폴더#세대]. 요청에 cwd 칸이 있으면 그것, 없으면 init 의 cwd
+    // 기억하는 도구(Bash·PowerShell, input.command 가 문자열): 키 = [도구, description 뺀 입력 전체(키 정렬), 작업 폴더#세대, blocked_path ?? null].
+    // 작업 폴더는 요청에 cwd 칸이 있으면 그것, 없으면 init 의 cwd
     const command = commandOfInput(req.input);
-    const key = command === null ? undefined
-      : JSON.stringify([toolName, command, `${typeof req.cwd === 'string' ? req.cwd : cwd ?? ''}#${cwdEpoch}`]);
+    const key = command === null || !REMEMBER_TOOLS.has(toolName) ? undefined
+      : JSON.stringify([toolName, inputKey(req.input), `${typeof req.cwd === 'string' ? req.cwd : cwd ?? ''}#${cwdEpoch}`, str(req.blocked_path)]);
     const toolCall = { toolCallId: toolUseId ?? '', title: toolLabel(toolName, req.input), kind: kindOf(toolName, req.input), toolName, rawInput: req.input };
     if (key !== undefined && sessionAllowed.has(key)) {
       hit('control_request/permission-auto');
@@ -266,7 +291,7 @@ export function createClaudeDriver() {
       options,
       ...(diff ? { diff: [diff] } : {}),
       ...(typeof req.description === 'string' ? { reason: req.description } : {}),
-      ext: { claude: { sessionRules, ...(toolUseId !== undefined ? { toolUseId } : {}) } },
+      ext: { claude: { sessionRules, remembers: key !== undefined, ...(toolUseId !== undefined ? { toolUseId } : {}) } },
     }];
   }
 
@@ -303,8 +328,7 @@ export function createClaudeDriver() {
           } else if (b.type === 'tool_use' && typeof b.id === 'string') {
             hit('assistant/tool_use');
             const name = String(b.name ?? '');
-            const cmd = commandOfInput(b.input);
-            if (cmd !== null && changesDirectory(cmd)) cwdEpoch++;
+            if (bumpsCwdEpoch(name, b.input)) cwdEpoch++;
             out.push({
               ...base(), type: 'toolCall', toolCallId: b.id, title: toolLabel(name, b.input), kind: kindOf(name, b.input), status: 'pending', toolName: name, rawInput: b.input, parentToolCallId: parent,
               ...(typeof b.name === 'string' ? {} : { toolNameNotString: true as const }),
@@ -343,6 +367,8 @@ export function createClaudeDriver() {
         const isError = !!m.is_error;
         const wasInterrupted = interrupted;
         interrupted = false;
+        // 턴이 끝나면 claude 가 답을 더 기다리지 않는다(앱도 카드를 취소한다)
+        pending.clear();
         return [{
           ...base(), type: 'turnEnd', stopReason: stopReasonOf(rawSubtype, isError, wasInterrupted), text: str(m.result),
           deniedCount: Array.isArray(m.permission_denials) ? m.permission_denials.length : 0, rawSubtype, isError,
@@ -370,6 +396,7 @@ export function createClaudeDriver() {
     stats: () => ({ thrown }),
     answerPermission(requestId: string, o: PermissionOutcome) {
       const p = pending.get(requestId);
+      pending.delete(requestId);
       if (o.outcome === 'selected' && o.optionId === 'allow_once') return success(requestId, { behavior: 'allow', updatedInput: p?.input });
       if (o.outcome === 'selected' && o.optionId === 'allow_session') {
         // 명령 도구면 키를 기억한다(같은 키는 다음부터 드라이버가 대신 허용). addRules 제안이 있으면 그 rules 만 session 으로 같이 보낸다.
@@ -384,8 +411,9 @@ export function createClaudeDriver() {
       return success(requestId, { behavior: 'deny', message: reason ? `${DENIED}. 이유: ${reason}` : `${DENIED}.` });
     },
     answerQuestion(requestId: string, o: QuestionOutcome) {
-      if (o.action !== 'accept') return success(requestId, { behavior: 'deny', message: `${DENIED}.` });
       const input = pending.get(requestId)?.input;
+      pending.delete(requestId);
+      if (o.action !== 'accept') return success(requestId, { behavior: 'deny', message: `${DENIED}.` });
       return success(requestId, { behavior: 'allow', updatedInput: { ...(isObj(input) ? input : {}), answers: o.answers } });
     },
     interrupt() {

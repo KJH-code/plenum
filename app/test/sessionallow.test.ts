@@ -170,6 +170,77 @@ describe('드라이버: 세션 허용 기억', () => {
     expect(changesDirectory(cmd)).toBe(want);
   });
 
+  it('(상-1) description 말고 다른 칸이 다르면 카드(dangerouslyDisableSandbox·run_in_background·timeout), 칸 순서만 다르면 같은 키', () => {
+    const d = started();
+    allowedOnce(d, 'Bash', 'touch a.txt');
+    for (const extra of [{ dangerouslyDisableSandbox: true }, { run_in_background: true }, { timeout: 1000 }]) {
+      expect(one(d.decode(raw(req(`r-${JSON.stringify(extra)}`, 'Bash', { command: 'touch a.txt', ...extra })))).type).toBe('requestPermission');
+    }
+    expect(one(d.decode(raw(req('r-desc', 'Bash', { description: '다른 설명', command: 'touch a.txt' })))).type).toBe('permissionAutoAllowed');
+    // 중첩 객체도 키 정렬: 순서만 다르면 같다
+    const e = started();
+    e.decode(raw(req('r-1', 'PowerShell', { command: 'x', opt: { b: 1, a: [2, { d: 1, c: 2 }] } })));
+    e.answerPermission('r-1', { outcome: 'selected', optionId: 'allow_session' });
+    expect(one(e.decode(raw(req('r-2', 'PowerShell', { opt: { a: [2, { c: 2, d: 1 }], b: 1 }, command: 'x' })))).type).toBe('permissionAutoAllowed');
+    // 배열 순서가 다르면 다른 키
+    expect(one(e.decode(raw(req('r-3', 'PowerShell', { command: 'x', opt: { b: 1, a: [{ d: 1, c: 2 }, 2] } })))).type).toBe('requestPermission');
+  });
+
+  it('(상-1) Bash·PowerShell 말고 command 도구(MCP 등)는 기억하지 않는다: addRules 가 있으면 버튼은 있지만 remembers 아님', () => {
+    const d = started();
+    const mcp = 'mcp__ssh__run';
+    const sugg = [{ type: 'addRules', rules: [{ toolName: mcp }], behavior: 'allow', destination: 'localSettings' }];
+    const ev = one(d.decode(raw(req('r-1', mcp, { command: 'ls', host: 'h1' }, { permission_suggestions: sugg }))));
+    expect(optionIds(ev)).toEqual(['allow_once', 'allow_session', 'reject_once']);
+    expect(ev.type === 'requestPermission' && ev.ext?.claude.remembers).toBe(false);
+    const ans = d.answerPermission('r-1', { outcome: 'selected', optionId: 'allow_session' }) as any;
+    expect(ans.response.response.updatedPermissions).toEqual([{ type: 'addRules', rules: [{ toolName: mcp }], behavior: 'allow', destination: 'session' }]);
+    expect(one(d.decode(raw(req('r-2', mcp, { command: 'ls', host: 'h1' }, { permission_suggestions: sugg })))).type).toBe('requestPermission');
+    // 제안이 없는 MCP command 도구는 세션 허용 버튼도 없다
+    expect(optionIds(one(d.decode(raw(req('r-3', mcp, { command: 'ls', host: 'h1' })))))).toEqual(['allow_once', 'reject_once']);
+    // Bash·PowerShell 은 remembers
+    const b = one(d.decode(raw(req('r-4', 'Bash', { command: 'ls' }))));
+    expect(b.type === 'requestPermission' && b.ext?.claude.remembers).toBe(true);
+  });
+
+  it('(3) blocked_path 만 다르면 카드, 같으면 자동 허용', () => {
+    const d = started();
+    allowedOnce(d, 'PowerShell', PS_A, { blocked_path: 'C:\\밖\\a.txt' });
+    expect(one(d.decode(raw(req('r-2', 'PowerShell', { command: PS_A }, { blocked_path: 'C:\\밖\\a.txt' })))).type).toBe('permissionAutoAllowed');
+    expect(one(d.decode(raw(req('r-3', 'PowerShell', { command: PS_A }, { blocked_path: 'C:\\밖\\b.txt' })))).type).toBe('requestPermission');
+    expect(one(d.decode(raw(req('r-4', 'PowerShell', { command: PS_A })))).type).toBe('requestPermission');
+    // 반대로: blocked_path 없이 허용한 것에 blocked_path 가 붙어 오면 카드
+    const e = started();
+    allowedOnce(e);
+    expect(one(e.decode(raw(req('r-2', 'PowerShell', { command: PS_A }, { blocked_path: 'C:\\x' })))).type).toBe('requestPermission');
+  });
+
+  it.each(['Agent', 'Task'])('(4) %s tool_use 뒤 같은 명령 → 카드', (name) => {
+    const d = started();
+    allowedOnce(d);
+    expect(one(d.decode(raw(req('r-2', 'PowerShell', { command: PS_A })))).type).toBe('permissionAutoAllowed');
+    d.decode(raw(toolUse('t-a', name, { description: '하위 작업', prompt: 'cd 없음', subagent_type: 'general-purpose' })));
+    expect(one(d.decode(raw(req('r-3', 'PowerShell', { command: PS_A })))).type).toBe('requestPermission');
+  });
+
+  it('(5) 답하기 전 같은 request_id 재사용 → 두 번째는 unknown + 거절 답, 첫 카드의 세션 허용은 첫 요청 키로', () => {
+    const d = started();
+    expect(one(d.decode(raw(req('r-1', 'PowerShell', { command: PS_A })))).type).toBe('requestPermission');
+    const dup = one(d.decode(raw(req('r-1', 'PowerShell', { command: 'Remove-Item -Recurse -Force .\\' }))));
+    expect(dup).toMatchObject({ type: 'unknown', reason: 'field', hint: 'can_use_tool/duplicate-id', answeredWithDefault: true, requestId: 'r-1',
+      reply: { type: 'control_response', response: { subtype: 'error', request_id: 'r-1', error: 'Plenum 채팅이 처리하지 못하는 요청' } } });
+    const ans = d.answerPermission('r-1', { outcome: 'selected', optionId: 'allow_session' }) as any;
+    expect(ans.response.response.updatedInput).toEqual({ command: PS_A });
+    expect(one(d.decode(raw(req('r-2', 'PowerShell', { command: PS_A })))).type).toBe('permissionAutoAllowed');
+    expect(one(d.decode(raw(req('r-3', 'PowerShell', { command: 'Remove-Item -Recurse -Force .\\' })))).type).toBe('requestPermission');
+    // 답한 뒤(또는 턴이 끝난 뒤)에는 같은 id 가 새 요청으로 받아진다
+    expect(one(d.decode(raw(req('r-1', 'PowerShell', { command: 'Get-Date' })))).type).toBe('requestPermission');
+    expect(one(d.decode(raw(req('r-q', 'Bash', { command: 'ls' })))).type).toBe('requestPermission');
+    d.decode(raw({ type: 'result', subtype: 'success', is_error: false, result: '', permission_denials: [] }));
+    expect(one(d.decode(raw(req('r-q', 'Bash', { command: 'ls' })))).type).toBe('requestPermission');
+    expect(d.stats().thrown).toBe(0);
+  });
+
   it('decode 는 예외 없이: 자동 허용 경로에서도 답 원문이 반드시 있다', () => {
     const d = started();
     allowedOnce(d);
@@ -233,6 +304,7 @@ describe('채팅 매니저: 자동 허용', () => {
     const pc1 = c1.card as Extract<Card, { kind: 'permission' }>;
     expect(pc1.sessionRules).toEqual([]);
     expect(pc1.sessionAllow).toBe(true);
+    expect(pc1.remembers).toBe(true);
     m.respond(id, { requestId: 'r-1', action: 'allow-session' });
 
     const auto = await waitEvent(m, id, 'autoAllowed');
@@ -280,9 +352,43 @@ describe('채팅 매니저: 자동 허용', () => {
     const id = (await m.start({ id: 'p1', path: projDir }, { text: '시작' })).chat.chatId;
     const c = await waitEvent(m, id, 'card');
     expect((c.card as any).sessionAllow).toBe(false);
+    expect((c.card as any).remembers).toBe(false);
     await expect(Promise.resolve().then(() => m.respond(id, { requestId: 'r-1', action: 'allow-session' }))).rejects.toMatchObject({ status: 400 });
     m.respond(id, { requestId: 'r-1', action: 'allow' });
     await waitEvent(m, id, 'result');
+  }, 30000);
+});
+
+describe('채팅 매니저: 같은 request_id 재사용', () => {
+  it('두 번째 요청은 stdin 에 거절, 첫 카드는 그대로 답할 수 있다', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), '홍길동 같은id-'));
+    const projDir = path.join(root, 'p');
+    fs.mkdirSync(projDir);
+    const fake = makeFakeStreamClaude(path.join(root, '가짜'));
+    const file = path.join(root, 'dup.jsonl');
+    writeScript(file, [
+      { dir: 'in', msg: { type: 'control_request', request_id: 'init-1', request: { subtype: 'initialize' } } }, { dir: 'in', msg: { type: 'user' } },
+      { dir: 'out', msg: INIT(projDir) },
+      { dir: 'out', msg: req('r-1', 'Bash', { command: 'ls' }) },
+      { dir: 'out', msg: req('r-1', 'Bash', { command: 'rm -rf x' }) },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'r-1' } } },
+      { dir: 'in', msg: { type: 'control_response', response: { request_id: 'r-1' } } },
+      { dir: 'out', msg: { type: 'result', subtype: 'success', is_error: false, result: '끝', permission_denials: [] } },
+      { dir: 'exit', code: 0 },
+    ]);
+    const m = createChatManager({ cfgDir: path.join(root, '설정'), env: fake.env({ script: file }), closeWaitMs: 3000 });
+    managers.push(m);
+    const id = (await m.start({ id: 'p1', path: projDir }, { text: '시작' })).chat.chatId;
+    await waitEvent(m, id, 'card');
+    await waitEvent(m, id, 'notice', (e) => e.code === 'other');
+    m.respond(id, { requestId: 'r-1', action: 'allow' });
+    await waitEvent(m, id, 'result');
+    const evs = events(m, id);
+    expect(evs.filter((e) => e.type === 'card').map((e) => (e as any).card.input.command)).toEqual(['ls']);
+    expect(fake.stdin().filter((x) => x.type === 'control_response')).toEqual([
+      { type: 'control_response', response: { subtype: 'error', request_id: 'r-1', error: 'Plenum 채팅이 처리하지 못하는 요청' } },
+      { type: 'control_response', response: { subtype: 'success', request_id: 'r-1', response: { behavior: 'allow', updatedInput: { command: 'ls' } } } },
+    ]);
   }, 30000);
 });
 
@@ -307,8 +413,20 @@ describe('카드: 세션 허용 버튼', () => {
     expect(render({})).not.toContain('이 세션 동안');
     expect(render({ sessionRules: [{ toolName: 'Bash', ruleContent: 'ls' }] })).toContain('이 세션 동안 <code>ls</code> 허용');
   });
-  it('답한 뒤 문구', () => {
-    expect(resolvedText({ outcome: 'allow-session' })).toBe('허용 · 이 세션 동안 같은 명령은 Plenum이 대신 허용');
+  it('답한 뒤 문구: remembers 면 "Plenum이 대신 허용", 아니면 예전 문구', () => {
+    expect(resolvedText({ outcome: 'allow-session' }, true)).toBe('허용 · 이 세션 동안 같은 명령은 Plenum이 대신 허용');
+    expect(resolvedText({ outcome: 'allow-session' }, false)).toBe('허용 · 이 세션 동안 다시 묻지 않음');
+    expect(resolvedText({ outcome: 'allow-session' })).toBe('허용 · 이 세션 동안 다시 묻지 않음');
+    const done = (extra: Partial<Perm>) => renderToStaticMarkup(createElement(PermissionCard, {
+      card: { kind: 'permission', requestId: 'r-1', toolName: 'PowerShell', input: { command: PS_A }, sessionRules: [], ...extra },
+      resolved: { outcome: 'allow-session' }, cwd: 'C:\\x', onReply: async () => {},
+    }));
+    expect(done({ sessionAllow: true, remembers: true })).toContain('같은 명령은 Plenum이 대신 허용');
+    expect(done({ sessionAllow: true, remembers: false, sessionRules: [{ toolName: 'mcp__x', ruleContent: 'y' }] })).toContain('이 세션 동안 다시 묻지 않음');
+  });
+  it('remembers 가 아니고 rules 도 없으면 버튼 없음(sessionAllow 없는 카드에서도)', () => {
+    expect(render({ remembers: false })).not.toContain('이 세션 동안');
+    expect(render({ remembers: true })).toContain('이 세션 동안 같은 명령 허용');
   });
 });
 

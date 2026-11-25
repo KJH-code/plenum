@@ -67,7 +67,9 @@ export type PermissionRequestEvent = Base & {
   diff?: { path: string; old: string; new: string }[];
   reason?: string;                            // 하네스가 붙인 설명(샌드박스 밖 쓰기 등)
   // P1: 동작 보존 — 지금 permission 카드의 sessionRules·toolUseId(tool_use_id 원값, 없으면 undefined)
-  ext?: { claude: { sessionRules: { toolName: string; ruleContent?: string }[]; toolUseId?: string } };
+  ext?: { claude: { sessionRules: { toolName: string; ruleContent?: string }[]; toolUseId?: string;
+    /** "이 세션 동안 허용"을 누르면 드라이버가 이 요청 키를 기억해 같은 요청을 대신 허용함(Claude: Bash·PowerShell) */
+    remembers?: boolean } };
 };
 // ── 드라이버가 대신 허용한 승인 요청 (카드 없음). Claude: "이 세션 동안 허용"을 누른 것과 (도구, 명령 글자 그대로, 작업 폴더#세대)가 같은 요청.
 // 작업 폴더 = 요청의 cwd 칸, 없으면 init 의 cwd. 세대 = cd·Set-Location 같은 폴더 바꾸는 명령의 tool_use 가 나온 수. 기억은 드라이버 인스턴스(채팅 프로세스) 동안만.

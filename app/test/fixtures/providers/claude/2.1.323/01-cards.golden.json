@@ -162,7 +162,8 @@
             "ruleContent": "touch a.txt"
           }
         ],
-        "sessionAllow": true
+        "sessionAllow": true,
+        "remembers": true
       },
       "seq": 13,
       "at": 0
@@ -224,7 +225,8 @@
             "ruleContent": "touch c.txt"
           }
         ],
-        "sessionAllow": true
+        "sessionAllow": true,
+        "remembers": true
       },
       "seq": 19,
       "at": 0
@@ -306,7 +308,8 @@
             "ruleContent": "rm a.txt"
           }
         ],
-        "sessionAllow": true
+        "sessionAllow": true,
+        "remembers": true
       },
       "seq": 27,
       "at": 0

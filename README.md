@@ -86,6 +86,7 @@ Node 18 이상 (컴파일러), Node 20.19 이상 (앱). GitHub Actions가 ubuntu
 ## 남은 일 (3단계 리뷰 하·노트북 확인, 0.3.x)
 - 끝난 채팅과 이벤트 버퍼가 서버가 도는 동안 메모리에 계속 남는다 — 개수·시간 상한을 두고 버리기
 - PowerShell 세션 허용: Plenum 이 (도구, 명령 글자 그대로, 작업 폴더)를 기억해 같은 명령을 카드 없이 대신 허용하게 바꿨다(D안). 노트북에서 장면 07(ⓐ~ⓔ, 하위 폴더로 `Set-Location` 한 뒤 같은 명령은 카드)을 다시 녹화해 확인 필요
+- Bash 는 addRules 를 session 으로 보내므로 Claude Code 규칙이 명령 글자만 보고, 다른 폴더에서도 다시 묻지 않는다(0.3.x 부터 같음)
 - 같은 프로젝트 동시 응답 경고가 아직 init 전(`starting`) 채팅과 훅으로 보이는 터미널 세션을 세지 않는다
 - `main.ts` 의 SIGINT·SIGHUP 연결(그리고 `node --import tsx` 신호 전달)을 자동 테스트로 검사하기(지금은 수동 측정만)
 - (0.3.x) 도구 한 줄 요약이 `command` 를 Bash 에서만 읽어 PowerShell 도구 줄이 "PowerShell" 만 나온다 — `command` 가 있는 도구는 다 명령을 붙이기(노트북 2026-11-15)
