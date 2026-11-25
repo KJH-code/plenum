@@ -69,6 +69,16 @@ export type PermissionRequestEvent = Base & {
   // P1: 동작 보존 — 지금 permission 카드의 sessionRules·toolUseId(tool_use_id 원값, 없으면 undefined)
   ext?: { claude: { sessionRules: { toolName: string; ruleContent?: string }[]; toolUseId?: string } };
 };
+// ── 드라이버가 대신 허용한 승인 요청 (카드 없음). Claude: "이 세션 동안 허용"을 누른 것과 (도구, 명령 글자 그대로, 작업 폴더#세대)가 같은 요청.
+// 작업 폴더 = 요청의 cwd 칸, 없으면 init 의 cwd. 세대 = cd·Set-Location 같은 폴더 바꾸는 명령의 tool_use 가 나온 수. 기억은 드라이버 인스턴스(채팅 프로세스) 동안만.
+// 앱은 reply 를 그대로 하네스에 쓰고(안 쓰면 claude 가 영원히 기다린다) 자동 허용 줄을 남긴다. 드라이버는 이 요청을 pending 에 두지 않는다
+export type PermissionAutoAllowedEvent = Base & {
+  type: 'permissionAutoAllowed';
+  requestId: string;
+  toolCall: PermissionRequestEvent['toolCall'];
+  reply: unknown;                             // 하네스에 쓸 allow(한 번) 답 원문 — UnknownEvent.reply 와 같은 칸 이름
+  ext?: { claude: { toolUseId?: string } };
+};
 export type PermissionOutcome =
   | { outcome: 'selected'; optionId: string; message?: string }   // reject_* 에 이유 문구
   | { outcome: 'cancelled' };
@@ -140,7 +150,7 @@ export type UnknownEvent = Base & {
 };
 
 export type ProviderEvent =
-  | MessageEvent | ToolCallEvent | PermissionRequestEvent | QuestionEvent | UsageEvent | TaskEvent
+  | MessageEvent | ToolCallEvent | PermissionRequestEvent | PermissionAutoAllowedEvent | QuestionEvent | UsageEvent | TaskEvent
   | SessionStartedEvent | TurnEndEvent | ExitEvent | UnknownEvent;
 
 // ── 드라이버 계약

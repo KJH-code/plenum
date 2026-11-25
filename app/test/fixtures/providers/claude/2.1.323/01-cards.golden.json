@@ -161,7 +161,8 @@
             "toolName": "Bash",
             "ruleContent": "touch a.txt"
           }
-        ]
+        ],
+        "sessionAllow": true
       },
       "seq": 13,
       "at": 0
@@ -222,7 +223,8 @@
             "toolName": "Bash",
             "ruleContent": "touch c.txt"
           }
-        ]
+        ],
+        "sessionAllow": true
       },
       "seq": 19,
       "at": 0
@@ -303,7 +305,8 @@
             "toolName": "Bash",
             "ruleContent": "rm a.txt"
           }
-        ]
+        ],
+        "sessionAllow": true
       },
       "seq": 27,
       "at": 0

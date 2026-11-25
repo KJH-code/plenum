@@ -6,7 +6,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import {
-  MIN_CLAUDE_VERSION, modeFromAnswer, modeFromSkill,
+  MIN_CLAUDE_VERSION, modeFromAnswer, modeFromSkill, toolLabel,
   type Card, type CardReply, type ChatConflict, type ChatEvent, type ChatInfo, type ChatRegistry, type ChatState, type LimitWindow, type Limits,
   type ModeName, type WorkerRun, limitGate,
 } from './chatTypes.ts';
@@ -287,9 +287,20 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
           kind: 'permission', requestId: ev.requestId, ...(toolUseId ? { toolUseId } : {}), toolName: ev.toolCall.toolName ?? '', input: ev.toolCall.rawInput,
           ...(typeof ev.reason === 'string' ? { description: ev.reason } : {}),
           sessionRules: ev.ext?.claude.sessionRules ?? [],
+          sessionAllow: ev.options.some((o) => o.optionId === 'allow_session'),
           ...(diff ? { diff } : {}),
         };
         addCard(c, card);
+        return;
+      }
+      case 'permissionAutoAllowed': {
+        // 세션 허용한 같은 명령: 드라이버가 만든 allow 답을 그대로 쓰고(안 쓰면 claude 가 멈춘다) 줄 하나만 남긴다. 카드·상태는 건드리지 않는다
+        try { write(c, ev.reply); } catch { /* 끝남 */ }
+        const toolName = ev.toolCall.toolName ?? '';
+        const input = ev.toolCall.rawInput;
+        const command = isObj(input) && typeof input.command === 'string' ? input.command : null;
+        const toolUseId = ev.ext?.claude.toolUseId;
+        emit(c, { type: 'autoAllowed', toolName, summary: command !== null ? `${toolName} ${command}` : toolLabel(toolName, input), requestId: ev.requestId, ...(toolUseId ? { toolUseId } : {}) });
         return;
       }
       case 'usage': {
@@ -457,7 +468,7 @@ export function createChatManager(o: ChatManagerOptions): ChatManager {
         outcome = 'allow';
         break;
       case 'allow-session': {
-        if (card.kind !== 'permission' || card.sessionRules.length === 0) throw new UserError(400, '이 세션 동안 허용할 규칙이 없다');
+        if (card.kind !== 'permission' || !(card.sessionAllow ?? card.sessionRules.length > 0)) throw new UserError(400, '이 세션 동안 허용할 규칙이 없다');
         msg = c.driver.answerPermission(reply.requestId, { outcome: 'selected', optionId: 'allow_session' });
         outcome = 'allow-session';
         break;

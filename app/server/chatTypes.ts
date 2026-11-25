@@ -39,6 +39,9 @@ export type Card =
       // "이 세션 동안 허용"에 쓸 규칙: permission_suggestions 중 type==='addRules' 인 것의 rules 만(재혁 결정 2026-11-13).
       // setMode·addDirectories 는 버린다(setMode acceptEdits 가 rm 까지 묻지 않고 실행시킴 — 녹화로 확인). 비면 버튼을 안 보인다
       sessionRules: SessionRule[];
+      // "이 세션 동안 허용" 버튼을 보일지(드라이버 옵션에 allow_session 이 있음 = 명령 도구이거나 sessionRules 가 있음).
+      // 명령 도구는 Plenum 이 (도구, 명령, 작업 폴더)를 기억해 같은 요청을 대신 허용한다. 없으면(옛 카드) sessionRules 유무로 본다
+      sessionAllow?: boolean;
       diff?: { path: string; old: string; new: string } }    // Edit/Write/MultiEdit 접힌 diff
   | { kind: 'unknown'; requestId: string; subtype: string; version: string | null }; // 처리 못 하는 control_request → 터미널로 열기 안내
 
@@ -61,6 +64,7 @@ export type ChatEvent = { seq: number; at: number } & (
   | { type: 'tool'; toolUseId: string; name: string; input: unknown; parentToolUseId: string | null }
   | { type: 'tool-result'; toolUseId: string; isError: boolean; text: string }  // text 는 앞 2000자
   | { type: 'card'; card: Card }
+  | { type: 'autoAllowed'; toolName: string; summary: string; requestId: string; toolUseId?: string } // 세션 허용한 같은 명령을 Plenum 이 카드 없이 허용함. summary = "<도구> <명령 그대로>"
   | { type: 'card-resolved'; requestId: string; outcome: 'allow' | 'allow-session' | 'deny' | 'answered' | 'cancelled'; detail?: string }
   | { type: 'worker'; worker: WorkerRun }                                       // 시작·갱신·끝 모두 같은 id 로 다시 보냄
   | { type: 'mode'; mode: ModeName }
@@ -126,7 +130,7 @@ export function toolLabel(name: string, input: unknown): string {
   if (typeof i.file_path === 'string') return `${name} ${toolBase(i.file_path)}`;
   if (name === 'Grep' && typeof i.pattern === 'string') return `${name} "${toolCut(i.pattern, 30)}"`;
   if (name === 'Glob' && typeof i.pattern === 'string') return `${name} ${toolCut(i.pattern, 30)}`;
-  if (name === 'Bash' && typeof i.command === 'string') return `${name} ${toolCut(i.command, 30)}`;
+  if (typeof i.command === 'string') return `${name} ${toolCut(i.command, 30)}`; // Bash·PowerShell 등 명령 도구 모두(노트북 2026-11-15)
   if (name === 'Agent' && typeof i.description === 'string') return `${name} ${toolCut(i.description, 30)}`;
   if (name === 'Skill' && typeof i.skill === 'string') return `${name} ${i.skill}`;
   return name;

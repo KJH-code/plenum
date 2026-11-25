@@ -16,7 +16,8 @@ export type Item =
   | { k: 'tools'; key: string; tools: ToolRun[] }
   | { k: 'workers'; key: string; ids: string[] }
   | { k: 'card'; key: string; card: Card; resolved: Resolved | null }
-  | { k: 'notice'; key: string; level: 'info' | 'warn' | 'error'; message: string };
+  | { k: 'notice'; key: string; level: 'info' | 'warn' | 'error'; message: string }
+  | { k: 'auto'; key: string; summary: string };   // 세션 허용한 같은 명령을 Plenum 이 대신 허용함
 export interface ChatView {
   lastSeq: number;
   items: Item[];
@@ -76,6 +77,7 @@ export function applyEvent(v: ChatView, ev: ChatEvent): boolean {
       (v.turnWorkers as Extract<Item, { k: 'workers' }>).ids.push(ev.worker.id);
       break;
     }
+    case 'autoAllowed': v.items.push({ k: 'auto', key, summary: ev.summary }); break;
     case 'mode': v.mode = ev.mode; break;
     case 'state': v.state = ev.state; break;
     case 'notice':
@@ -384,6 +386,7 @@ export function Chat(props: ChatProps) {
   let prevUser = true;
   for (const it of v.items) {
     if (it.k === 'user') { rows.push(<Bubble key={it.key} text={it.text} />); prevUser = true; continue; }
+    if (it.k === 'auto') { rows.push(<p key={it.key} className="chat-notice info" data-testid="auto-allowed">자동 허용: {it.summary}</p>); continue; }
     if (it.k === 'notice') { rows.push(<p key={it.key} className={`chat-notice ${it.level}`} role={it.level === 'info' ? undefined : 'alert'}>{it.message}</p>); continue; }
     if (prevUser) rows.push(<ClaudeLabel key={`l${it.key}`} />);
     prevUser = false;

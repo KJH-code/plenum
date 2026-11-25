@@ -223,6 +223,10 @@ async function main(argv: string[]): Promise<number> {
         const q = pickQuestion(ev.questions);
         console.log(`질문 ${ev.questions.map((x) => x.header ?? x.question).join(' / ')} → ${q.action === 'accept' ? JSON.stringify(q.answers) : '거부'}`);
         send(driver.answerQuestion(ev.requestId, q));
+      } else if (ev.type === 'permissionAutoAllowed') {
+        // 세션 허용한 명령과 같은 키 → 드라이버가 만든 허용 답을 그대로 보낸다(카드 없음)
+        console.log(`#auto ${ev.toolCall.toolName} ${JSON.stringify(commandOf(ev.toolCall.rawInput) ?? '')} → 자동 허용(Plenum)`);
+        send(ev.reply);
       } else if (ev.type === 'unknown' && ev.reply !== undefined) {
         console.log(`처리 못 하는 요청(${ev.hint ?? '?'}) → 드라이버 기본 답(거절)`);
         send(ev.reply);

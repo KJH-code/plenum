@@ -367,6 +367,7 @@
         },
         "description": "README.md",
         "sessionRules": [],
+        "sessionAllow": false,
         "diff": {
           "path": "/tmp/plenum-rec-홍길동-AbCdEf/README.md",
           "old": "# fake\n",

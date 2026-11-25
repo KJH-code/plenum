@@ -3,7 +3,7 @@
 // 줄 모양 근거: test/fixtures/providers/claude/2.1.323/*.jsonl (진짜 claude 녹화). 모르는 줄은 'unknown' 으로 올린다.
 import { toolLabel, type LimitWindow as ChatLimitWindow, type Limits, type Question, type SessionRule } from '../chatTypes.ts';
 import type {
-  Driver, LimitWindow, PermissionOption, PermissionOutcome, ProviderEvent, QuestionOutcome, Raw, StopReason, ToolKind, UnknownEvent, UsageEvent,
+  Driver, LimitWindow, PermissionAutoAllowedEvent, PermissionOption, PermissionOutcome, ProviderEvent, QuestionOutcome, Raw, StopReason, ToolKind, UnknownEvent, UsageEvent,
 } from './events.ts';
 
 // 거부 deny message 머리. "훅이 막았다"로 읽히지 않게(2.1.248 haiku) 사람이 거부했다고 못 박는다
@@ -21,7 +21,7 @@ export const BRANCHES = [
   'stream/no-event', 'stream/sub', 'stream/message_start', 'stream/text_delta', 'stream/text_delta-no-id', 'stream/other',
   'assistant/no-content', 'assistant/text', 'assistant/tool_use', 'assistant/other-block',
   'user/no-content', 'user/tool_result',
-  'control_request/field', 'control_request/question', 'control_request/permission', 'control_request/permission-session', 'control_request/other',
+  'control_request/field', 'control_request/question', 'control_request/permission', 'control_request/permission-session', 'control_request/permission-auto', 'control_request/other',
   'control_response',
   'rate_limit/field', 'rate_limit/usage', 'rate_limit/rejected',
   'result',
@@ -129,6 +129,14 @@ function sessionRulesFrom(suggestions: unknown): SessionRule[] {
   return out;
 }
 
+// 작업 폴더를 바꾸는 말(cd·chdir·Set-Location·sl·Push-Location·pushd·Pop-Location·popd, 대소문자 무시)이 명령 맨 앞이나
+// ; & | ( { 줄바꿈 따옴표 뒤에 낱말로 있으면 true. 따옴표 안 글자도 잡는다(오탐 = 카드가 한 번 더 뜸 → 안전한 쪽)
+const CHDIR = /(?:^|[;&|({\n\r"'])\s*(?:cd|chdir|set-location|sl|push-location|pushd|pop-location|popd)(?![\w-])/i;
+export function changesDirectory(command: string): boolean {
+  return CHDIR.test(command);
+}
+const commandOfInput = (input: unknown): string | null => (isObj(input) && typeof input.command === 'string' ? input.command : null);
+
 // 도구 이름 → kind. 승인 카드·요약은 이름이 아니라 command 칸 유무로 다루므로(Windows PowerShell) 여기 값은 참고용
 const TOOL_KIND: Record<string, ToolKind> = {
   Read: 'read', NotebookRead: 'read', Edit: 'edit', MultiEdit: 'edit', Write: 'edit', NotebookEdit: 'edit',
@@ -159,7 +167,11 @@ export function createClaudeDriver() {
   let lastMessageId: string | null = null;
   let sessionId: string | null = null;
   const taskToTool = new Map<string, string>();
-  const pending = new Map<string, { input: unknown; sessionRules: SessionRule[] }>();
+  const pending = new Map<string, { input: unknown; sessionRules: SessionRule[]; key?: string }>();
+  // "이 세션 동안 허용"을 누른 (도구, 명령 글자 그대로, 작업 폴더#세대). 이 드라이버(= 채팅 프로세스) 동안만. 이어하기면 새 드라이버라 비어 있다
+  const sessionAllowed = new Set<string>();
+  let cwd: string | null = null;                // system/init 의 cwd
+  let cwdEpoch = 0;                            // 폴더를 바꾸는 명령의 tool_use 가 나올 때마다 1 올린다(실행 여부 모름 → 안전한 쪽)
   let intN = 0;
   let interrupted = false;                     // 이번 턴에 interrupt() 를 만들었음. result 를 받으면 내린다
   let thrown = 0;                              // decode 가 안에서 잡은 예외 수(계약 테스트 (b) 가 0 인지 본다)
@@ -178,6 +190,8 @@ export function createClaudeDriver() {
       hit('system/init');
       const sid = str(m.session_id);
       if (sid !== null) sessionId = sid;
+      const initCwd = str(m.cwd);
+      if (initCwd !== null) cwd = initCwd;
       const permissionMode = str(m.permissionMode);
       return [{
         ...base(), type: 'sessionStarted', sessionId: sid ?? '', model: str(m.model), mode: permissionMode, resumed: false,
@@ -223,9 +237,24 @@ export function createClaudeDriver() {
     }
     hit('control_request/permission');
     const sessionRules = sessionRulesFrom(req.permission_suggestions);
-    pending.set(requestId, { input: req.input, sessionRules });
+    // 명령 도구(input.command 가 문자열): 키 = [도구, 명령 그대로, 작업 폴더#세대]. 요청에 cwd 칸이 있으면 그것, 없으면 init 의 cwd
+    const command = commandOfInput(req.input);
+    const key = command === null ? undefined
+      : JSON.stringify([toolName, command, `${typeof req.cwd === 'string' ? req.cwd : cwd ?? ''}#${cwdEpoch}`]);
+    const toolCall = { toolCallId: toolUseId ?? '', title: toolLabel(toolName, req.input), kind: kindOf(toolName, req.input), toolName, rawInput: req.input };
+    if (key !== undefined && sessionAllowed.has(key)) {
+      hit('control_request/permission-auto');
+      // 카드 없이 allow(한 번)로 대신 답한다. pending 에 넣지 않는다
+      const ev: PermissionAutoAllowedEvent = {
+        ...base(), type: 'permissionAutoAllowed', requestId, toolCall,
+        reply: success(requestId, { behavior: 'allow', updatedInput: req.input }),
+        ext: { claude: { ...(toolUseId !== undefined ? { toolUseId } : {}) } },
+      };
+      return [ev];
+    }
+    pending.set(requestId, { input: req.input, sessionRules, ...(key !== undefined ? { key } : {}) });
     const options: PermissionOption[] = [{ optionId: 'allow_once', name: '허용', kind: 'allow_once', scope: 'once' }];
-    if (sessionRules.length) {
+    if (sessionRules.length || key !== undefined) {
       hit('control_request/permission-session');
       options.push({ optionId: 'allow_session', name: '이 세션 동안 허용', kind: 'allow_always', scope: 'session' });
     }
@@ -233,7 +262,7 @@ export function createClaudeDriver() {
     const diff = diffFrom(toolName, req.input);
     return [{
       ...base(), type: 'requestPermission', requestId,
-      toolCall: { toolCallId: toolUseId ?? '', title: toolLabel(toolName, req.input), kind: kindOf(toolName, req.input), toolName, rawInput: req.input },
+      toolCall,
       options,
       ...(diff ? { diff: [diff] } : {}),
       ...(typeof req.description === 'string' ? { reason: req.description } : {}),
@@ -274,6 +303,8 @@ export function createClaudeDriver() {
           } else if (b.type === 'tool_use' && typeof b.id === 'string') {
             hit('assistant/tool_use');
             const name = String(b.name ?? '');
+            const cmd = commandOfInput(b.input);
+            if (cmd !== null && changesDirectory(cmd)) cwdEpoch++;
             out.push({
               ...base(), type: 'toolCall', toolCallId: b.id, title: toolLabel(name, b.input), kind: kindOf(name, b.input), status: 'pending', toolName: name, rawInput: b.input, parentToolCallId: parent,
               ...(typeof b.name === 'string' ? {} : { toolNameNotString: true as const }),
@@ -341,7 +372,12 @@ export function createClaudeDriver() {
       const p = pending.get(requestId);
       if (o.outcome === 'selected' && o.optionId === 'allow_once') return success(requestId, { behavior: 'allow', updatedInput: p?.input });
       if (o.outcome === 'selected' && o.optionId === 'allow_session') {
-        return success(requestId, { behavior: 'allow', updatedInput: p?.input, updatedPermissions: [{ type: 'addRules', rules: p?.sessionRules ?? [], behavior: 'allow', destination: 'session' }] });
+        // 명령 도구면 키를 기억한다(같은 키는 다음부터 드라이버가 대신 허용). addRules 제안이 있으면 그 rules 만 session 으로 같이 보낸다.
+        // addDirectories·setMode 는 절대 보내지 않는다. 제안이 없으면 빈 addRules 도 보내지 않는다
+        if (p?.key !== undefined) sessionAllowed.add(p.key);
+        const rules = p?.sessionRules ?? [];
+        if (!rules.length) return success(requestId, { behavior: 'allow', updatedInput: p?.input });
+        return success(requestId, { behavior: 'allow', updatedInput: p?.input, updatedPermissions: [{ type: 'addRules', rules, behavior: 'allow', destination: 'session' }] });
       }
       // 거부(그리고 cancelled·모르는 optionId): "사용자가" 를 밝힌다 — 그냥 message 만 주면 Claude 가 훅이 막은 것으로 이해했다(노트북 2.1.248)
       const reason = o.outcome === 'selected' ? o.message : undefined;

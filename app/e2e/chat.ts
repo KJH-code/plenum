@@ -89,7 +89,7 @@ try {
   await sess.waitFor(T);
   assert.equal((await sess.innerText()).replace(/\s+/g, ' '), '이 세션 동안 touch c.txt 허용');
   await sess.click();
-  await perm('touch c.txt').getByTestId('card-result').filter({ hasText: '허용 · 이 세션 동안 다시 묻지 않음' }).waitFor(T);
+  await perm('touch c.txt').getByTestId('card-result').filter({ hasText: '허용 · 이 세션 동안 같은 명령은 Plenum이 대신 허용' }).waitFor(T);
   await perm('rm a.txt').getByRole('button', { name: '거부…' }).click(T);
   // 이유는 한 글자씩 타이핑(fill 아님) → "거부 보내기" 클릭
   await page.getByLabel('거부 이유').pressSequentially('지우지마', { delay: 40 });

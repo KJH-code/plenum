@@ -102,7 +102,7 @@ function permBody(input: unknown): string {
 export function resolvedText(r: Resolved): string {
   switch (r.outcome) {
     case 'allow': return '허용';
-    case 'allow-session': return '허용 · 이 세션 동안 다시 묻지 않음';
+    case 'allow-session': return '허용 · 이 세션 동안 같은 명령은 Plenum이 대신 허용';
     case 'deny': return r.detail ? `거부함 · "${r.detail}"를 Claude에게 전달` : '거부함';
     case 'answered': return `→ ${r.detail ?? ''}`;
     case 'cancelled': return '답하기 전에 턴이 끝났다';
@@ -138,9 +138,9 @@ export function PermissionCard({ card, resolved, cwd, onReply }: { card: Extract
         <>
           <div className="row-wrap">
             <button type="button" className="btn primary" disabled={busy} onClick={() => send({ requestId: card.requestId, action: 'allow' })}>허용</button>
-            {card.sessionRules.length > 0 && (
+            {(card.sessionAllow ?? card.sessionRules.length > 0) && (
               <button type="button" className="btn" disabled={busy} onClick={() => send({ requestId: card.requestId, action: 'allow-session' })}>
-                이 세션 동안 <code>{rules}</code> 허용
+                {card.sessionRules.length > 0 ? <>이 세션 동안 <code>{rules}</code> 허용</> : '이 세션 동안 같은 명령 허용'}
               </button>
             )}
             <button type="button" className="btn danger" disabled={busy} aria-expanded={denyOpen} onClick={() => setDenyOpen((v) => !v)}>거부…</button>
