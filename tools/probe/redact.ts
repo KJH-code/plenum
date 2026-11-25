@@ -1,5 +1,5 @@
 // 녹화 원본(record.ts 결과) → 개인 정보를 치환한 fixture. 같은 입력·같은 env 면 같은 출력.
-// 사용(app/ 에서): npm run probe:redact -- <scene>-raw.jsonl [--dest <dir>] [--allow-empty-words]
+// 사용(app/ 에서): npm run probe:redact -- <scene>-raw.jsonl [--dest <dir>] [--allow-empty-words] [--explain]
 //   → <dest>/<scene>.jsonl, <dest>/meta.json(scenes 에 추가·정렬, 있으면 합침). dest 기본 app/test/fixtures/providers/claude/<version>/
 // 치환 규칙은 2.1.323 README 를 따른다: 홈 → C:\Users\홍길동 · /home/hong, PLENUM_PRIVATE_WORDS·Windows 사용자 이름과 깨진 형태 → 홍길동/hong,
 // 허용 밖 이메일 → hong@example.invalid, 계정·조직 UUID → 0 UUID, synced/<uuid>_<uuid> → synced/ORG_ACCOUNT,
@@ -254,6 +254,37 @@ export function findRisks(text: string, ctx: Ctx): string[] {
   return out;
 }
 
+// --explain: 걸린 자리를 이름 글자만 가려 찍는다(원본을 보낼 수 없을 때 진단용).
+// 한글→가, ASCII 글자→a, 숫자→9, U+FFFD→?, 그 밖 비ASCII(깨진 형태 등)→*, 기호·백슬래시·공백은 그대로.
+// 개인 정보가 아닌 고정 경로 조각(Users·AppData 등)과 치환 값(홍길동·hong)은 그대로 둔다
+const DIAG_KEEP = ['Users', 'USERS', 'users', 'AppData', 'Local', 'LocalLow', 'Roaming', 'Temp', 'TEMP', 'temp', 'plenum', 'rec', 'proj', 'probe', 'Desktop', 'Documents', HONG, 'hong', 'AbCdEf', 'mnt', 'u'];
+export function maskForDiag(s: string): string {
+  let out = '';
+  const keep = [...DIAG_KEEP].sort((a, b) => b.length - a.length);
+  for (let i = 0; i < s.length;) {
+    const k = keep.find((w) => w.length > 1 && s.startsWith(w, i) && !/[A-Za-z0-9]/.test(s[i - 1] ?? '') && !/[A-Za-z0-9]/.test(s[i + w.length] ?? ''));
+    if (k) { out += k; i += k.length; continue; }
+    const cp = s.codePointAt(i)!; const ch = String.fromCodePoint(cp); i += ch.length;
+    if (cp >= 0xac00 && cp <= 0xd7a3) out += '가';
+    else if (/[A-Za-z]/.test(ch)) out += 'a';
+    else if (/[0-9]/.test(ch)) out += '9';
+    else if (cp === 0xfffd) out += '?';
+    else if (cp > 0x7f) out += '*';
+    else out += ch;
+  }
+  return out;
+}
+export function explainLine(raw: string, redacted: string, pad = 20): string[] {
+  const out: string[] = [];
+  const near = (t: string, at: number, len: number) => maskForDiag(t.slice(Math.max(0, at - pad), at + len + pad));
+  for (const [name, re] of WIN_HOME_CHECKS) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    for (const m of redacted.matchAll(g)) out.push(`  치환 뒤 [${name}] @${m.index}: ${near(redacted, m.index!, m[0].length)}`);
+  }
+  for (const m of raw.matchAll(/Users/gi)) out.push(`  원본 Users @${m.index}: ${near(raw, m.index!, 5)}`);
+  return out;
+}
+
 // fffd: 원본에 U+FFFD 가 있던 줄, fffdLeft: 치환 뒤에도 남은 줄(실패 아님 — 보고에 적기)
 export function redactLines(lines: string[], ctx: Ctx):
   { out: string[]; fffd: number[]; fffdLeft: number[]; risks: { line: number; what: string }[] } {
@@ -288,15 +319,16 @@ export function mergeMeta(existing: Record<string, any> | null, rec: Record<stri
 }
 
 function main(argv: string[]): number {
-  let raw: string | null = null; let dest: string | null = null; let allowEmpty = false;
+  let raw: string | null = null; let dest: string | null = null; let allowEmpty = false; let explain = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--allow-empty-words') allowEmpty = true;
+    else if (argv[i] === '--explain') explain = true;
     else if (argv[i] === '--dest') { dest = argv[++i] ?? null; if (!dest) { console.error('--dest 뒤에 폴더가 없다'); return 1; } }
     else if (argv[i].startsWith('--')) { console.error(`모르는 옵션: ${argv[i]}`); return 1; }
     else if (!raw) raw = argv[i];
     else { console.error(`인자가 너무 많다: ${argv[i]}`); return 1; }
   }
-  if (!raw) { console.error('사용: npm run probe:redact -- <scene>-raw.jsonl [--dest <dir>] [--allow-empty-words]'); return 1; }
+  if (!raw) { console.error('사용: npm run probe:redact -- <scene>-raw.jsonl [--dest <dir>] [--allow-empty-words] [--explain]'); return 1; }
   const gate = wordsGate(privateWordsFromEnv(), { allowEmpty });
   if (gate.message) console.error(gate.message);
   if (!gate.ok) return 4;
@@ -312,12 +344,18 @@ function main(argv: string[]): number {
 
   const ctx = buildContext({ workdir: typeof recMeta.workdir === 'string' ? recMeta.workdir : null });
   for (const w of ctx.warnings) console.warn(w);
-  const { out, fffd, fffdLeft, risks } = redactLines(fs.readFileSync(rawPath, 'utf8').split(/\r?\n/), ctx);
+  const rawLines = fs.readFileSync(rawPath, 'utf8').split(/\r?\n/);
+  const { out, fffd, fffdLeft, risks } = redactLines(rawLines, ctx);
   const red = redactValue(recMeta, ctx) as Record<string, any>;
   const metaRisks = findRisks(JSON.stringify(red), ctx);
   for (const n of fffd) console.log(`U+FFFD 있음(원래 바이트를 되살릴 수 없음 — 보고에 적기): ${n}번째 줄${fffdLeft.includes(n) ? ' (치환 뒤에도 남음, 실패 아님)' : ' (치환·삭제 뒤 남지 않음)'}`);
   if (risks.length || metaRisks.length) {
     for (const r of risks) console.error(`치환 뒤 남음: ${r.line}번째 줄 — ${r.what}`);
+    if (explain) for (const n of [...new Set(risks.map((r) => r.line))]) {
+      const l = rawLines[n - 1]; const r = redactLine(l, ctx) ?? '';
+      console.error(`${n}번째 줄 (가림: 한글→가 ASCII→a 숫자→9 U+FFFD→? 그 밖 비ASCII→*)`);
+      for (const e of explainLine(l, r)) console.error(e);
+    }
     for (const r of metaRisks) console.error(`치환 뒤 남음: 메타 — ${r}`);
     console.error('파일을 쓰지 않았다');
     return 3;

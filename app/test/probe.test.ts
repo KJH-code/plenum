@@ -523,3 +523,15 @@ describe('review 4차 반례', () => {
     expect(hits.join('\n')).not.toMatch(/uac11/i);
   });
 });
+
+describe('redact --explain 가림', () => {
+  test('이름 글자는 가리고 고정 조각·기호는 둔다', async () => {
+    const { maskForDiag, explainLine } = await import('../../tools/probe/redact.ts');
+    expect(maskForDiag('C:\\Users\\갑돌\\AppData\\Local\\Temp')).toBe('a:\\Users\\가가\\AppData\\Local\\Temp');
+    expect(maskForDiag('C:\\\\Users\\\\gapdol9\\\\x\uFFFDí')).toBe('a:\\\\Users\\\\aaaaaa9\\\\a?*');
+    expect(maskForDiag('C:\\Users\\홍길동\\proj')).toBe('a:\\Users\\홍길동\\proj');
+    const lines = explainLine('"cwd":"D:\\\\Users\\\\gapdol\\\\x"', '"cwd":"D:\\\\Users\\\\gapdol\\\\x"');
+    expect(lines.some((l) => l.includes('Windows 사용자 폴더'))).toBe(true);
+    expect(lines.join('\n')).not.toMatch(/gapdol/i);
+  });
+});

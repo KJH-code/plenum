@@ -7,12 +7,13 @@ CLI 버전이 바뀔 때마다 다시 녹화한다. 승인·질문의 답은 레
 
 ```
 npm run probe -- ../tools/probe/scenes/07-powershell-session.json [--out <폴더>] [--dry-run] [--allow-empty-words]
-npm run probe:redact -- <out>/<장면>-raw.jsonl [--dest <폴더>] [--allow-empty-words]
+npm run probe:redact -- <out>/<장면>-raw.jsonl [--dest <폴더>] [--allow-empty-words] [--explain]
 ```
 
 - 둘 다 `PLENUM_PRIVATE_WORDS`(쉼표 구분: 이메일 아이디·실명 등)가 비어 있으면 거부한다(종료 코드 4). 낱말 없이 하려면 `--allow-empty-words` 를 붙인다. `--dry-run` 은 경고만 한다.
 - `probe`: 작업 폴더를 만들고 claude 를 띄운다. claude 를 못 띄움·`--version` 실패·init 버전 없음·턴 끝 없음·종료 코드 ≠0·시간 초과면 0 아닌 코드로 끝난다. stdin 이 닫혀 못 보낸 답은 콘솔에 `dropped` 로 알리고 녹화에 남기지 않는다. 결과 `<out>/<장면>-raw.jsonl`·`<장면>-meta.json`. 기본 out 은 `os.tmpdir()/plenum-probe/`(Windows `$env:TEMP\plenum-probe\`). `--dry-run` 은 claude 를 띄우지 않고 작업 폴더·프롬프트·인자만 출력한다.
 - `probe:redact`: 치환한 `<dest>/<장면>.jsonl` 과 `<dest>/meta.json`(scenes 에 추가). 기본 dest 는 `app/test/fixtures/providers/claude/<meta.version>/`. 치환 뒤 낱말·깨진 형태·홍길동 아닌 Windows 홈·`RateLimitResetCredit` 실제 값이 남으면 파일을 쓰지 않고 실패한다(종료 코드 3).
+  `--explain` 은 거부될 때 걸린 줄의 홈 경로 자리(치환 뒤 걸린 곳·원본의 `Users` 근처, 앞뒤 20자)를 이름 글자만 가려 찍는다(한글→가, ASCII→a, 숫자→9, U+FFFD→?, 그 밖 비ASCII→*). 원본을 보낼 수 없을 때 진단용.
   U+FFFD 가 있던 줄은 번호를 알린다. 홈 폴더 이름 자리가 U+FFFD·깨진 형태로만 되어 있으면(원래 바이트를 잃은 사용자 이름) 그 자리는 `홍길동` 으로 바꾼다. 그 밖에 남은 U+FFFD 는 실패가 아니다(보고에 적는다).
 
 ## 병합 전 검사 (`probe:scan`)
